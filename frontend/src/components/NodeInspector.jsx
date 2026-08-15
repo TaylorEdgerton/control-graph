@@ -4,11 +4,11 @@ import ArrowDownwardRounded from '@mui/icons-material/ArrowDownwardRounded';
 import ArrowUpwardRounded from '@mui/icons-material/ArrowUpwardRounded';
 import CheckCircleOutlineRounded from '@mui/icons-material/CheckCircleOutlineRounded';
 import ErrorOutlineRounded from '@mui/icons-material/ErrorOutlineRounded';
-import { KIND_COLORS, KIND_LABELS } from '../constants.js';
+import { KIND_LABELS, SYSTEM_COLORS } from '../constants.js';
 import { capitalize, identityLabel, shortName, sourceName } from '../graph-utils.js';
 
 export default function NodeInspector({ node, status, upstreamCount, downstreamCount, traceMode, showTrace }) {
-  const kindColor = node ? KIND_COLORS[node.kind] : null;
+  const systemColor = node ? SYSTEM_COLORS[node.system] : null;
   return <Paper square elevation={0} sx={{
     gridColumn: { lg: 3 }, gridRow: { lg: 1 }, borderBottom: '1px solid', borderColor: 'divider',
     minHeight: 0, overflowY: 'auto', p: 2.25,
@@ -20,7 +20,7 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
         mt: 1.5,
         textAlign: 'center',
         bgcolor: 'controlGraph.background.neutral',
-        borderLeft: `3px solid ${kindColor}`,
+        borderLeft: `2px solid ${systemColor}`,
       }}>
         <Typography variant="body1" fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{KIND_LABELS[node.kind]}: {shortName(node.name)}</Typography>
       </Paper>
@@ -34,7 +34,7 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
         <InspectorRow label="Status" value={<Chip
           size="small"
           icon={status === 'resolved' ? <CheckCircleOutlineRounded /> : <ErrorOutlineRounded />}
-          label={capitalize(status)} color={status === 'resolved' ? 'success' : 'warning'} variant="outlined"
+          label={capitalize(status)} color={status === 'resolved' ? 'success' : 'warning'}
         />} />
       </Box>
       <Stack spacing={1.25} sx={{ mt: 2.25 }}>

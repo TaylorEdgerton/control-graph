@@ -15,19 +15,10 @@ export const KIND_LABELS = {
   MAPPING_ISSUE: 'Mapping issue',
 };
 
-export const KIND_COLORS = {
-  SEL_DEVICE: darkTokens.accent.blue,
-  PROTOCOL_POINT: darkTokens.accent.teal,
-  RTAC_TAG: darkTokens.accent.purple,
-  IEC_VARIABLE: darkTokens.accent.purple,
-  IEC_LOGIC: darkTokens.accent.magenta,
-  IGNITION_DEVICE: darkTokens.accent.green,
-  OPC_ITEM: darkTokens.accent.teal,
-  UDT_DEFINITION: darkTokens.accent.lime,
-  UDT_INSTANCE: darkTokens.accent.yellow,
-  UDT_MEMBER: darkTokens.accent.green,
-  IGNITION_TAG: darkTokens.semantic.success,
-  MAPPING_ISSUE: darkTokens.accent.orange,
+export const SYSTEM_COLORS = {
+  SEL: darkTokens.accent.blue,
+  IGNITION: darkTokens.accent.teal,
+  RESOLVER: darkTokens.accent.orange,
 };
 
 export const SYSTEM_FILTERS = [

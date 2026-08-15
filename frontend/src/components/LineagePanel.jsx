@@ -19,7 +19,7 @@ import {
   useReactFlow,
 } from '@xyflow/react';
 import { alpha } from '@mui/material/styles';
-import { FLOW_NODE_HEIGHT, FLOW_NODE_WIDTH, KIND_COLORS, KIND_LABELS } from '../constants.js';
+import { FLOW_NODE_HEIGHT, FLOW_NODE_WIDTH, KIND_LABELS, SYSTEM_COLORS } from '../constants.js';
 import { buildFlowElements, capitalize, shortName } from '../graph-utils.js';
 import { darkTokens } from '../theme-tokens.js';
 
@@ -150,7 +150,8 @@ function CanvasButton({ title, onClick, children }) {
 
 function ControlFlowNode({ data, selected }) {
   const node = data.controlNode;
-  const color = KIND_COLORS[node.kind] || darkTokens.accent.gray;
+  const accent = SYSTEM_COLORS[node.system] || darkTokens.accent.gray;
+  const handleColor = selected ? darkTokens.border.focused : darkTokens.graph.edge;
   return <Paper
     elevation={selected ? 8 : 1}
     sx={{
@@ -163,20 +164,30 @@ function ControlFlowNode({ data, selected }) {
       justifyContent: 'center',
       bgcolor: selected ? darkTokens.background.selected : darkTokens.surface.raised,
       border: selected ? '2px solid' : '1px solid',
-      borderColor: selected ? color : darkTokens.border.bold,
-      borderLeft: `4px solid ${color}`,
+      borderColor: selected ? darkTokens.border.focused : darkTokens.border.bold,
       borderRadius: 1.25,
       boxShadow: selected
-        ? `0 0 0 3px ${alpha(color, .22)}, ${darkTokens.shadow.overlay}`
+        ? `0 0 0 3px ${alpha(darkTokens.border.focused, .2)}, ${darkTokens.shadow.overlay}`
         : darkTokens.shadow.raised,
+      position: 'relative',
+      '&::before': {
+        content: '""',
+        position: 'absolute',
+        left: 5,
+        top: 12,
+        bottom: 12,
+        width: 2,
+        borderRadius: 2,
+        bgcolor: alpha(accent, selected ? .95 : .65),
+      },
     }}
   >
-    <Handle type="target" position={Position.Left} style={{ width: 7, height: 7, background: color, borderColor: darkTokens.surface.sunken }} />
-    <Typography variant="caption" sx={{ color, fontWeight: 700, letterSpacing: '.035em', textTransform: 'uppercase', lineHeight: 1.1 }}>
+    <Handle type="target" position={Position.Left} style={{ width: 7, height: 7, background: handleColor, borderColor: darkTokens.surface.sunken }} />
+    <Typography variant="caption" sx={{ color: selected ? 'primary.light' : 'text.secondary', fontWeight: 700, letterSpacing: '.035em', textTransform: 'uppercase', lineHeight: 1.1 }}>
       {KIND_LABELS[node.kind] || node.kind}
     </Typography>
     <Typography variant="body2" fontWeight={700} noWrap title={node.name} sx={{ mt: .55 }}>{shortName(node.name)}</Typography>
     <Typography variant="caption" color="text.secondary" lineHeight={1.1}>{node.system}</Typography>
-    <Handle type="source" position={Position.Right} style={{ width: 7, height: 7, background: color, borderColor: darkTokens.surface.sunken }} />
+    <Handle type="source" position={Position.Right} style={{ width: 7, height: 7, background: handleColor, borderColor: darkTokens.surface.sunken }} />
   </Paper>;
 }

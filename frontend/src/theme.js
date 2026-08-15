@@ -135,6 +135,16 @@ export const theme = createTheme({
       styleOverrides: {
         root: { fontWeight: 650 },
         filled: { backgroundColor: darkTokens.background.neutral },
+        filledSuccess: {
+          color: darkTokens.accent.green,
+          backgroundColor: darkTokens.background.success,
+          '& .MuiChip-icon': { color: 'inherit' },
+        },
+        filledWarning: {
+          color: darkTokens.semantic.warning,
+          backgroundColor: darkTokens.background.warning,
+          '& .MuiChip-icon': { color: 'inherit' },
+        },
         outlinedSuccess: {
           color: darkTokens.semantic.success,
           borderColor: darkTokens.semantic.success,

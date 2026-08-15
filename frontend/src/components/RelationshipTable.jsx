@@ -44,7 +44,7 @@ export default function RelationshipTable({ index, relationships, selectedEdge, 
               <TableCell><Typography variant="caption" fontWeight={700}>{labelEdge(edge.kind).toUpperCase()}</Typography></TableCell>
               <TableCell>{to?.name || edge.target}</TableCell>
               <TableCell>{evidenceFiles(edge).join(', ') || 'Resolver'}</TableCell>
-              <TableCell><Chip size="small" label={capitalize(edge.status)} color={edge.status === 'resolved' ? 'success' : 'warning'} variant="outlined" /></TableCell>
+              <TableCell><Chip size="small" label={capitalize(edge.status)} color={edge.status === 'resolved' ? 'success' : 'warning'} /></TableCell>
             </TableRow>;
           })}
           {!relationships.length && <TableRow><TableCell colSpan={5}><Typography color="text.secondary">No relationships are available.</Typography></TableCell></TableRow>}
