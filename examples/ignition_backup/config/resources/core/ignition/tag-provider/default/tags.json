@@ -1,0 +1,41 @@
+{
+  "provider": "default",
+  "tags": [
+    {
+      "name": "MotorStatus",
+      "tagType": "UdtType",
+      "typeId": "_types_/MotorStatus",
+      "parameters": {
+        "Device": "DNP_Gateway",
+        "RunPoint": 0
+      },
+      "tags": [
+        {
+          "name": "Run",
+          "tagType": "AtomicTag",
+          "dataType": "Boolean",
+          "valueSource": "opc",
+          "opcServer": "Ignition OPC UA Server",
+          "opcItemPath": "[{Device}]Binary Input {RunPoint}"
+        }
+      ]
+    },
+    {
+      "name": "Pump_01",
+      "tagType": "UdtInstance",
+      "typeId": "_types_/MotorStatus",
+      "parameters": {
+        "Device": "DNP_Gateway",
+        "RunPoint": 12
+      }
+    },
+    {
+      "name": "Unmapped_Pressure",
+      "tagType": "AtomicTag",
+      "dataType": "Float4",
+      "valueSource": "opc",
+      "opcServer": "Ignition OPC UA Server",
+      "opcItemPath": "[DNP_Gateway]Analog Input 99"
+    }
+  ]
+}

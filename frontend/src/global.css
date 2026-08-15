@@ -1,0 +1,23 @@
+html,
+body,
+#root {
+  min-height: 100%;
+  margin: 0;
+}
+
+.react-flow__pane {
+  cursor: grab;
+}
+
+.react-flow__pane:active {
+  cursor: grabbing;
+}
+
+.react-flow__edge:focus-visible .react-flow__edge-path {
+  stroke-width: 4;
+}
+
+.react-flow__node:focus-visible {
+  outline: 2px solid var(--controlgraph-focus-ring);
+  outline-offset: 4px;
+}

@@ -1,0 +1,10 @@
+__pycache__/
+*.py[cod]
+*.egg-info/
+.venv/
+node_modules/
+frontend/dist/
+controlgraph-demo.json
+.agents
+.codex
+.claude

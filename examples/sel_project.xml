@@ -1,0 +1,22 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<RTACProject name="Water_Plant_RTAC">
+  <Devices>
+    <Device name="Relay_A" protocol="DNP3" hostname="10.20.1.10" outstationId="7">
+      <ProtocolPoint name="Relay_Run" direction="input" objectType="Binary Input" index="5" tag="Relay_Run_Raw" />
+    </Device>
+    <Device name="Ignition_Link" protocol="DNP3" hostname="10.20.1.20" outstationId="1">
+      <ProtocolPoint name="Published_Run" direction="output" objectType="Binary Input" index="12" tag="Run_Command_Out" />
+    </Device>
+  </Devices>
+  <Tags>
+    <Tag name="Relay_Run_Raw" dataType="BOOL" />
+    <Tag name="Run_Command_Out" dataType="BOOL" />
+  </Tags>
+  <POUs>
+    <Program name="Publish_Relay_Status">
+      <StructuredText><![CDATA[
+        Run_Command_Out := Relay_Run_Raw;
+      ]]></StructuredText>
+    </Program>
+  </POUs>
+</RTACProject>
