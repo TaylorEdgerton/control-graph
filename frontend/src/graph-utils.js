@@ -234,7 +234,7 @@ export function buildFlowElements(index, graphView, selectedId, systemFilters, t
   });
   const edges = controlEdges.map((edge) => {
     const unresolved = edge.status !== 'resolved';
-    const identityMatch = edge.kind === 'communication_identity_match';
+    const identityMatch = ['communication_identity_match', 'device_connection_match'].includes(edge.kind);
     const color = unresolved
       ? darkTokens.semantic.warning
       : identityMatch ? darkTokens.semantic.success : darkTokens.graph.edge;

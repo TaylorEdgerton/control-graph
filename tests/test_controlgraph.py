@@ -43,7 +43,7 @@ class ControlGraphTests(unittest.TestCase):
             node.id for node in graph.nodes.values()
             if node.name == "[default]Pump_01/Run" and node.kind == "IGNITION_TAG"
         )
-        path = directed_path(graph, start, end)
+        path = directed_path(graph, start, end, ignored_edge_kinds={"device_connection_match"})
 
         self.assertIsNotNone(path)
         kinds = [graph.nodes[node_id].kind for node_id in path]
@@ -58,6 +58,11 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(match.status, "resolved")
         self.assertEqual(match.attributes["identityKey"], "dnp3|10.20.1.20|1|binary input|12")
         self.assertGreaterEqual(len(match.evidence), 3)
+        device_match = next(edge for edge in graph.edges.values() if edge.kind == "device_connection_match")
+        self.assertEqual(graph.nodes[device_match.source].name, "Ignition_Link")
+        self.assertEqual(graph.nodes[device_match.target].name, "DNP_Gateway")
+        self.assertEqual(device_match.attributes["matchedPointCount"], 1)
+        self.assertEqual(device_match.attributes["identityKeys"], [match.attributes["identityKey"]])
 
     def test_gwbk_zip_is_extracted_and_parsed(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -128,6 +133,9 @@ class ControlGraphTests(unittest.TestCase):
         resolved = resolve(parse_sel(SEL), graph)
         match = next(edge for edge in resolved.edges.values() if edge.kind == "communication_identity_match")
         self.assertEqual(match.status, "resolved")
+        device_match = next(edge for edge in resolved.edges.values() if edge.kind == "device_connection_match")
+        self.assertEqual(resolved.nodes[device_match.source].name, "Ignition_Link")
+        self.assertEqual(resolved.nodes[device_match.target].name, "RTAC_A")
 
     def test_unresolved_mapping_is_explicit(self) -> None:
         graph = build_graph(SEL, IGNITION)
@@ -226,7 +234,13 @@ class ControlGraphTests(unittest.TestCase):
             app.state.workspace.close()
 
 
-def directed_path(graph, start: str, end: str) -> list[str] | None:
+def directed_path(
+    graph,
+    start: str,
+    end: str,
+    ignored_edge_kinds: set[str] | None = None,
+) -> list[str] | None:
+    ignored = ignored_edge_kinds or set()
     queue = deque([(start, [start])])
     seen = {start}
     while queue:
@@ -234,7 +248,12 @@ def directed_path(graph, start: str, end: str) -> list[str] | None:
         if current == end:
             return path
         for edge in graph.edges.values():
-            if edge.source != current or edge.status != "resolved" or edge.target in seen:
+            if (
+                edge.source != current
+                or edge.status != "resolved"
+                or edge.kind in ignored
+                or edge.target in seen
+            ):
                 continue
             seen.add(edge.target)
             queue.append((edge.target, [*path, edge.target]))

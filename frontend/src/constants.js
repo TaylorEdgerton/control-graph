@@ -6,7 +6,7 @@ export const KIND_LABELS = {
   RTAC_TAG: 'RTAC tag',
   IEC_VARIABLE: 'IEC variable',
   IEC_LOGIC: 'IEC logic',
-  IGNITION_DEVICE: 'Ignition device',
+  IGNITION_DEVICE: 'Connection device',
   OPC_ITEM: 'OPC item',
   UDT_DEFINITION: 'UDT definition',
   UDT_INSTANCE: 'UDT instance',

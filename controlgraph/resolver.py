@@ -50,6 +50,17 @@ def resolve(sel: ControlGraph, ignition: ControlGraph) -> ControlGraph:
                 attributes={"identityKey": key, "matchedSource": source_id},
                 evidence=evidence,
             )
+            sel_device_id = _point_device(graph, point.id)
+            if sel_device_id and device_id:
+                _add_device_connection_match(
+                    graph,
+                    sel_device_id,
+                    device_id,
+                    point.id,
+                    source_id,
+                    key,
+                    evidence,
+                )
         elif len(candidates) > 1:
             _add_issue(
                 graph,
@@ -85,6 +96,65 @@ def _source_device(graph: ControlGraph, source_id: str) -> str | None:
         if edge.target == source_id and edge.kind == "provides" and graph.nodes[edge.source].kind == "IGNITION_DEVICE":
             return edge.source
     return None
+
+
+def _point_device(graph: ControlGraph, point_id: str) -> str | None:
+    for edge in graph.edges.values():
+        if (
+            edge.target == point_id
+            and edge.kind == "contains"
+            and graph.nodes[edge.source].kind == "SEL_DEVICE"
+        ):
+            return edge.source
+    return None
+
+
+def _add_device_connection_match(
+    graph: ControlGraph,
+    sel_device_id: str,
+    ignition_device_id: str,
+    point_id: str,
+    source_id: str,
+    identity_key: str,
+    evidence: list[Evidence],
+) -> None:
+    edge_id = stable_id(
+        "edge", sel_device_id, ignition_device_id, "device_connection_match", "resolved"
+    )
+    attributes = {} if edge_id in graph.edges else {
+        "matchedPoints": [],
+        "matchedSources": [],
+        "identityKeys": [],
+    }
+    edge = graph.add_edge(
+        sel_device_id,
+        ignition_device_id,
+        "device_connection_match",
+        status="resolved",
+        attributes=attributes,
+        evidence=[
+            *evidence,
+            Evidence(
+                "resolver",
+                f"{sel_device_id}->{ignition_device_id}",
+                "At least one protocol point maps through this configured Ignition device",
+            ),
+        ],
+    )
+    if edge is None:
+        return
+    edge.attributes.setdefault("matchedPoints", [])
+    edge.attributes.setdefault("matchedSources", [])
+    edge.attributes.setdefault("identityKeys", [])
+    _append_unique(edge.attributes["matchedPoints"], point_id)
+    _append_unique(edge.attributes["matchedSources"], source_id)
+    _append_unique(edge.attributes["identityKeys"], identity_key)
+    edge.attributes["matchedPointCount"] = len(edge.attributes["matchedPoints"])
+
+
+def _append_unique(values: list[str], value: str) -> None:
+    if value not in values:
+        values.append(value)
 
 
 def _add_issue(
