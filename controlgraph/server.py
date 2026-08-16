@@ -57,22 +57,28 @@ class GraphResponse(BaseModel):
     summary: SummaryResponse
 
 
-class BackupFileResponse(BaseModel):
+class ImportFileResponse(BaseModel):
     id: str
     name: str
     size: int
     status: str
+    importKind: str
     fileType: str
-    version: str
-    versionFamily: str
-    timestamp: str
-    backupType: str
+    version: str = ""
+    versionFamily: str = ""
+    timestamp: str = ""
+    backupType: str = ""
     configurationFormat: str
     configurationSource: str
-    tagConfigurationCount: int
-    tagProviders: list[str]
-    projects: list[str]
-    selectedTagProviders: list[str]
+    tagConfigurationCount: int = 0
+    tagProviders: list[str] = Field(default_factory=list)
+    projects: list[str] = Field(default_factory=list)
+    selectedTagProviders: list[str] = Field(default_factory=list)
+    rootElement: str = ""
+    projectName: str = ""
+    sourceNodeCount: int = 0
+    sourceDeviceCount: int = 0
+    protocolPointCount: int = 0
     nodeCount: int | None = None
     deviceCount: int | None = None
     tagCount: int | None = None
@@ -84,17 +90,17 @@ class BackupFileResponse(BaseModel):
 
 
 class WorkspaceResponse(BaseModel):
-    staged: list[BackupFileResponse]
-    imports: list[BackupFileResponse]
+    staged: list[ImportFileResponse]
+    imports: list[ImportFileResponse]
 
 
 class StagedResponse(BaseModel):
-    staged: list[BackupFileResponse]
+    staged: list[ImportFileResponse]
 
 
 class ImportSelection(BaseModel):
     stagedId: str
-    tagProviders: list[str] = Field(min_length=1)
+    tagProviders: list[str] = Field(default_factory=list)
 
 
 class ConfirmImportsRequest(BaseModel):
@@ -102,7 +108,7 @@ class ConfirmImportsRequest(BaseModel):
 
 
 class ImportMutationResponse(BaseModel):
-    imports: list[BackupFileResponse]
+    imports: list[ImportFileResponse]
     graph: GraphResponse
 
 
@@ -148,7 +154,7 @@ def create_app(
         "/api/imports",
         response_model=WorkspaceResponse,
         tags=["imports"],
-        summary="List staged and imported Gateway backups",
+        summary="List staged and imported project files",
     )
     async def list_imports() -> dict[str, Any]:
         return {"staged": workspace.list_staged(), "imports": workspace.list_imports()}
@@ -157,7 +163,7 @@ def create_app(
         "/api/imports/stage",
         response_model=StagedResponse,
         tags=["imports"],
-        summary="Upload and inspect Gateway backups before import",
+        summary="Upload and inspect a Gateway backup or control-device XML project",
         openapi_extra={
             "requestBody": {
                 "required": True,
@@ -173,7 +179,7 @@ def create_app(
         request: Request,
         encoded_filename: str = Header(alias="X-ControlGraph-Filename"),
     ) -> dict[str, Any]:
-        filename = unquote(encoded_filename) or "gateway.gwbk"
+        filename = unquote(encoded_filename) or "project"
         record_id, destination = workspace.reserve_upload(filename)
         size = 0
         digest = hashlib.sha256()
@@ -182,11 +188,11 @@ def create_app(
                 async for chunk in request.stream():
                     size += len(chunk)
                     if size > MAX_UPLOAD_SIZE:
-                        raise ValueError("The selected backup exceeds the 500 MB upload limit.")
+                        raise ValueError("The selected project file exceeds the 500 MB upload limit.")
                     digest.update(chunk)
                     target.write(chunk)
             if size == 0:
-                raise ValueError("The selected backup is empty.")
+                raise ValueError("The selected project file is empty.")
             result = workspace.finish_stage(
                 record_id,
                 filename,
@@ -206,20 +212,20 @@ def create_app(
         "/api/imports/staged/{record_id}",
         response_model=StagedResponse,
         tags=["imports"],
-        summary="Discard a staged Gateway backup",
+        summary="Discard a staged project file",
     )
     async def discard_staged_import(record_id: str) -> dict[str, Any]:
         try:
             staged = workspace.discard_stage(record_id)
         except KeyError as error:
-            raise HTTPException(status_code=404, detail="The staged backup does not exist.") from error
+            raise HTTPException(status_code=404, detail="The staged project does not exist.") from error
         return {"staged": staged}
 
     @app.post(
         "/api/imports/confirm",
         response_model=ImportMutationResponse,
         tags=["imports"],
-        summary="Confirm staged backups and add them to the analysis",
+        summary="Confirm staged projects and add them to the analysis",
     )
     async def confirm_imports(request: ConfirmImportsRequest) -> dict[str, Any]:
         try:

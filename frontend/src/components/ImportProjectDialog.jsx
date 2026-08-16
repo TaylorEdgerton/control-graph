@@ -26,6 +26,7 @@ import {
   Typography,
 } from '@mui/material';
 import CloudUploadOutlined from '@mui/icons-material/CloudUploadOutlined';
+import AccountTreeOutlined from '@mui/icons-material/AccountTreeOutlined';
 import DeleteOutlineRounded from '@mui/icons-material/DeleteOutlineRounded';
 import FolderZipOutlined from '@mui/icons-material/FolderZipOutlined';
 
@@ -113,7 +114,7 @@ export default function ImportProjectDialog({ open, close, onGraphChange, notify
       setSelectedProviders({});
       setImports(data.imports);
       onGraphChange(data.graph);
-      notify(`${data.imports.length} Gateway ${data.imports.length === 1 ? 'backup is' : 'backups are'} in the analysis.`);
+      notify(`${data.imports.length} project ${data.imports.length === 1 ? 'file is' : 'files are'} in the analysis.`);
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -128,7 +129,7 @@ export default function ImportProjectDialog({ open, close, onGraphChange, notify
       const data = await requestJson(`/api/imports/${recordId}`, { method: 'DELETE' });
       setImports(data.imports);
       onGraphChange(data.graph);
-      notify('The Gateway backup was removed from the analysis.');
+      notify('The project file was removed from the analysis.');
     } catch (requestError) {
       setError(requestError.message);
     } finally {
@@ -137,15 +138,16 @@ export default function ImportProjectDialog({ open, close, onGraphChange, notify
   }
 
   return <Dialog open={open} onClose={busy ? undefined : close} fullWidth maxWidth="md">
-    <DialogTitle>Import Gateway Backups</DialogTitle>
+    <DialogTitle>Import Projects</DialogTitle>
     <DialogContent dividers>
       <Stack direction={{ xs: 'column', sm: 'row' }} spacing={2} alignItems={{ sm: 'center' }} justifyContent="space-between">
         <Box>
-          <Typography variant="subtitle2">Select one or more Ignition Gateway backups</Typography>
+          <Typography variant="subtitle2">Select Gateway backups or control-device XML projects</Typography>
+          <Typography variant="caption" color="text.secondary">Files are detected and reviewed before they enter the analysis.</Typography>
         </Box>
         <Button component="label" variant="outlined" startIcon={<CloudUploadOutlined />} disabled={busy}>
-          Select Backups
-          <input hidden type="file" accept=".gwbk,application/zip" multiple onChange={selectFiles} />
+          Select Files
+          <input hidden type="file" accept=".gwbk,.xml,application/zip,application/xml,text/xml" multiple onChange={selectFiles} />
         </Button>
       </Stack>
 
@@ -154,33 +156,33 @@ export default function ImportProjectDialog({ open, close, onGraphChange, notify
 
       <SectionTitle title="Ready to import" count={staged.length} sx={{ mt: 3 }} />
       <Stack spacing={1.25} sx={{ mt: 1 }}>
-        {staged.map((backup) => <BackupCard
-          key={backup.id}
-          backup={backup}
-          selectedProviders={selectedProviders[backup.id] || []}
+        {staged.map((project) => <ProjectCard
+          key={project.id}
+          project={project}
+          selectedProviders={selectedProviders[project.id] || []}
           onProvidersChange={(providers) => setSelectedProviders((current) => ({
             ...current,
-            [backup.id]: providers,
+            [project.id]: providers,
           }))}
-          action={<Tooltip title="Discard this backup"><span><IconButton
-            aria-label={`Discard ${backup.name}`}
-            onClick={() => discardStage(backup.id)}
+          action={<Tooltip title="Discard this project"><span><IconButton
+            aria-label={`Discard ${project.name}`}
+            onClick={() => discardStage(project.id)}
             disabled={busy}
           ><DeleteOutlineRounded /></IconButton></span></Tooltip>}
         />)}
-        {!staged.length && <EmptyState>No backups are waiting for confirmation.</EmptyState>}
+        {!staged.length && <EmptyState>No project files are waiting for confirmation.</EmptyState>}
       </Stack>
 
       <Divider sx={{ my: 3 }} />
       <SectionTitle title="Included in analysis" count={imports.length} />
       <Stack spacing={1.25} sx={{ mt: 1 }}>
-        {imports.map((backup) => <BackupCard
-          key={backup.id}
-          backup={backup}
+        {imports.map((project) => <ProjectCard
+          key={project.id}
+          project={project}
           imported
           action={<Tooltip title="Remove from analysis"><span><IconButton
-            aria-label={`Remove ${backup.name} from analysis`}
-            onClick={() => removeImport(backup.id)}
+            aria-label={`Remove ${project.name} from analysis`}
+            onClick={() => removeImport(project.id)}
             disabled={busy}
           ><DeleteOutlineRounded /></IconButton></span></Tooltip>}
         />)}
@@ -192,10 +194,12 @@ export default function ImportProjectDialog({ open, close, onGraphChange, notify
       <Button
         variant="contained"
         onClick={confirmImport}
-        disabled={busy || !staged.length || staged.some((item) => !selectedProviders[item.id]?.length)}
+        disabled={busy || !staged.length || staged.some((item) => (
+          item.importKind === 'ignition' && !selectedProviders[item.id]?.length
+        ))}
         startIcon={busy ? <CircularProgress size={16} color="inherit" /> : <CloudUploadOutlined />}
       >
-        Import {staged.length || ''} {staged.length === 1 ? 'Backup' : 'Backups'}
+        Import {staged.length || ''} {staged.length === 1 ? 'Project' : 'Projects'}
       </Button>
     </DialogActions>
   </Dialog>;
@@ -208,54 +212,60 @@ function SectionTitle({ title, count, sx }) {
   </Stack>;
 }
 
-function BackupCard({
-  backup,
+function ProjectCard({
+  project,
   imported = false,
   action,
   selectedProviders = [],
   onProvidersChange,
 }) {
-  const importedProviders = backup.selectedTagProviders || [];
+  const importedProviders = project.selectedTagProviders || [];
+  const isGateway = project.importKind === 'ignition';
   return <Paper variant="outlined" sx={{ p: 1.5 }}>
     <Stack direction="row" spacing={1.5} alignItems="flex-start">
       <Box sx={{ color: imported ? 'success.main' : 'primary.light', pt: .25 }}>
-        <FolderZipOutlined />
+        {isGateway ? <FolderZipOutlined /> : <AccountTreeOutlined />}
       </Box>
       <Box sx={{ minWidth: 0, flex: 1 }}>
-        <Typography variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{backup.name}</Typography>
+        <Typography variant="body2" fontWeight={700} sx={{ overflowWrap: 'anywhere' }}>{project.name}</Typography>
         <Stack direction="row" spacing={.75} useFlexGap flexWrap="wrap" sx={{ mt: .75 }}>
-          <Chip size="small" label={backup.fileType} />
-          <Chip size="small" color="primary" variant="outlined" label={`Ignition ${backup.versionFamily}`} />
-          <Chip size="small" label={backup.configurationFormat.toUpperCase()} />
-          <Chip size="small" label={formatBytes(backup.size)} />
+          <Chip size="small" label={project.fileType} />
+          {isGateway && <Chip size="small" color="primary" variant="outlined" label={`Ignition ${project.versionFamily}`} />}
+          {!isGateway && project.projectName && <Chip size="small" color="primary" variant="outlined" label={project.projectName} />}
+          <Chip size="small" label={project.configurationFormat.toUpperCase()} />
+          <Chip size="small" label={formatBytes(project.size)} />
         </Stack>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
-          Version {backup.version} · {backup.configurationSource} · {backup.tagConfigurationCount.toLocaleString()} tag configurations
-        </Typography>
-        <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          {backup.backupType || 'Gateway'} backup{backup.timestamp ? ` · ${backup.timestamp}` : ''}
-          {imported ? ` · ${backup.nodeCount.toLocaleString()} nodes · ${backup.deviceCount.toLocaleString()} devices` : ''}
-        </Typography>
-        {imported && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
-          {(backup.opcTagCount || 0).toLocaleString()} OPC tags audited · {(backup.excludedTagCount || 0).toLocaleString()} non-OPC tags excluded
-          {(backup.invalidOpcPathCount || backup.missingConnectionCount)
-            ? ` · ${(backup.invalidOpcPathCount || 0).toLocaleString()} invalid paths · ${(backup.missingConnectionCount || 0).toLocaleString()} missing connections`
+        {isGateway ? <>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+            Version {project.version} · {project.configurationSource} · {project.tagConfigurationCount.toLocaleString()} tag configurations
+          </Typography>
+          <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+            {project.backupType || 'Gateway'} backup{project.timestamp ? ` · ${project.timestamp}` : ''}
+            {imported ? ` · ${project.nodeCount.toLocaleString()} nodes · ${project.deviceCount.toLocaleString()} devices` : ''}
+          </Typography>
+        </> : <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: 1 }}>
+          Root {project.rootElement} · {project.sourceNodeCount.toLocaleString()} recognized nodes · {project.sourceDeviceCount.toLocaleString()} devices · {project.protocolPointCount.toLocaleString()} protocol points
+        </Typography>}
+        {imported && isGateway && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          {(project.opcTagCount || 0).toLocaleString()} OPC tags audited · {(project.excludedTagCount || 0).toLocaleString()} non-OPC tags excluded
+          {(project.invalidOpcPathCount || project.missingConnectionCount)
+            ? ` · ${(project.invalidOpcPathCount || 0).toLocaleString()} invalid paths · ${(project.missingConnectionCount || 0).toLocaleString()} missing connections`
             : ''}
         </Typography>}
-        {imported && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: .5 }}>
+        {imported && isGateway && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: .5 }}>
           Tag providers: {importedProviders.join(', ') || 'None'}
         </Typography>}
-        {!imported && <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
-          <InputLabel id={`${backup.id}-providers-label`}>Tag providers</InputLabel>
+        {!imported && isGateway && <FormControl fullWidth size="small" sx={{ mt: 1.5 }}>
+          <InputLabel id={`${project.id}-providers-label`}>Tag providers</InputLabel>
           <Select
-            labelId={`${backup.id}-providers-label`}
+            labelId={`${project.id}-providers-label`}
             multiple
             value={selectedProviders}
             onChange={(event) => onProvidersChange(event.target.value)}
             input={<OutlinedInput label="Tag providers" />}
             renderValue={(selected) => selected.join(', ')}
           >
-            {backup.tagProviders.map((provider) => <MenuItem key={provider} value={provider}>
+            {project.tagProviders.map((provider) => <MenuItem key={provider} value={provider}>
               <Checkbox checked={selectedProviders.includes(provider)} />
               <ListItemText primary={provider} />
             </MenuItem>)}
@@ -269,9 +279,11 @@ function BackupCard({
 }
 
 function providerSelections(backups) {
-  return Object.fromEntries(backups.map((backup) => [
-    backup.id,
-    backup.selectedTagProviders?.length ? backup.selectedTagProviders : backup.tagProviders,
+  return Object.fromEntries(backups.map((project) => [
+    project.id,
+    project.importKind === 'ignition'
+      ? (project.selectedTagProviders?.length ? project.selectedTagProviders : project.tagProviders)
+      : [],
   ]));
 }
 

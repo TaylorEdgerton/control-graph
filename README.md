@@ -15,7 +15,7 @@ make run
 
 Open `http://127.0.0.1:8765`. Open `http://127.0.0.1:8765/docs` for the API documentation.
 
-`make run` Use **Import Project** in the application to stage one or more `.gwbk` files, review the detected version and configuration format, select the tag providers, and add the backups to the analysis. Imported backups can be removed later.
+`make run` Use **Import Project** in the application to stage one or more Ignition `.gwbk` backups or control-device `.xml` project exports.
 
 ## Use project files
 

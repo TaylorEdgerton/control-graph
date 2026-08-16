@@ -562,6 +562,49 @@ class ControlGraphTests(unittest.TestCase):
         finally:
             app.state.workspace.close()
 
+    def test_import_api_stages_confirms_and_removes_control_device_xml(self) -> None:
+        source_graph = ControlGraph()
+        ignition_graph = parse_ignition(IGNITION)
+        app = create_app(
+            resolve(source_graph, ignition_graph),
+            serve_static=False,
+            source_graph=source_graph,
+            ignition_graph=ignition_graph,
+        )
+        try:
+            staged, confirmed, imported_graph, removed = asyncio.run(
+                import_workflow(app, SOURCE_PROJECT, [])
+            )
+            self.assertEqual(staged.status_code, 200)
+            project = staged.json()["staged"][0]
+            self.assertEqual(project["importKind"], "source")
+            self.assertEqual(project["fileType"], "Control-device XML project")
+            self.assertEqual(project["configurationFormat"], "xml")
+            self.assertEqual(project["rootElement"], "RTACProject")
+            self.assertEqual(project["projectName"], "Water_Plant_Controller")
+            self.assertEqual(project["sourceDeviceCount"], 2)
+            self.assertEqual(project["protocolPointCount"], 2)
+            self.assertEqual(project["tagProviders"], [])
+
+            self.assertEqual(confirmed.status_code, 200)
+            imported = confirmed.json()["imports"][0]
+            self.assertEqual(imported["selectedTagProviders"], [])
+            imported_payload = imported_graph.json()
+            imported_names = {node["name"] for node in imported_payload["nodes"]}
+            self.assertIn("Relay_A", imported_names)
+            self.assertIn("[default]Pump_01/Run", imported_names)
+            self.assertTrue(any(
+                edge["kind"] == "communication_identity_match"
+                for edge in imported_payload["edges"]
+            ))
+
+            self.assertEqual(removed.status_code, 200)
+            restored_names = {node["name"] for node in removed.json()["graph"]["nodes"]}
+            self.assertNotIn("Relay_A", restored_names)
+            self.assertIn("[default]Pump_01/Run", restored_names)
+        finally:
+            app.state.workspace.close()
+
     def test_built_mui_frontend_is_served_when_available(self) -> None:
         if not (ROOT / "frontend" / "dist" / "index.html").exists():
             self.skipTest("Run 'make build' to create the frontend")
@@ -606,7 +649,11 @@ async def get_responses(app, *paths: str) -> tuple[httpx.Response, ...]:
         return tuple([await client.get(path) for path in paths])
 
 
-async def import_workflow(app, path: Path) -> tuple[httpx.Response, ...]:
+async def import_workflow(
+    app,
+    path: Path,
+    tag_providers: list[str] | None = None,
+) -> tuple[httpx.Response, ...]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
         with path.open("rb") as upload:
@@ -621,7 +668,12 @@ async def import_workflow(app, path: Path) -> tuple[httpx.Response, ...]:
         record_id = staged.json()["staged"][0]["id"]
         confirmed = await client.post(
             "/api/imports/confirm",
-            json={"selections": [{"stagedId": record_id, "tagProviders": ["default"]}]},
+            json={
+                "selections": [{
+                    "stagedId": record_id,
+                    "tagProviders": ["default"] if tag_providers is None else tag_providers,
+                }],
+            },
         )
         imported_graph = await client.get("/api/graph")
         removed = await client.delete(f"/api/imports/{record_id}")

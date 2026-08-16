@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+from dataclasses import dataclass
 from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
@@ -29,12 +30,59 @@ REFERENCE_KEYS = (
 )
 
 
+@dataclass(frozen=True)
+class SourceProjectInfo:
+    root_element: str
+    project_name: str
+    node_count: int
+    device_count: int
+    protocol_point_count: int
+
+    def to_dict(self) -> dict[str, object]:
+        return {
+            "importKind": "source",
+            "fileType": "Control-device XML project",
+            "configurationFormat": "xml",
+            "configurationSource": f"XML root: {self.root_element}",
+            "rootElement": self.root_element,
+            "projectName": self.project_name,
+            "sourceNodeCount": self.node_count,
+            "sourceDeviceCount": self.device_count,
+            "protocolPointCount": self.protocol_point_count,
+        }
+
+
+def inspect_source_project(path: str | Path) -> SourceProjectInfo:
+    source = Path(path)
+    if not source.exists() or not source.is_file():
+        raise ValueError(f"The control-device XML project does not exist: {source}")
+    try:
+        root = ET.parse(source).getroot()
+    except (ET.ParseError, OSError) as exc:
+        raise ValueError(f"The control-device project is not valid XML: {exc}") from exc
+    graph = parse_source(source)
+    if not graph.nodes:
+        raise ValueError("The XML file does not contain supported control-device project objects.")
+    root_name = _local(root.tag)
+    properties = _properties(root)
+    project_name = _name(properties, source.stem)
+    return SourceProjectInfo(
+        root_element=root_name,
+        project_name=project_name,
+        node_count=len(graph.nodes),
+        device_count=len([node for node in graph.nodes.values() if node.kind == "SOURCE_DEVICE"]),
+        protocol_point_count=len([
+            node for node in graph.nodes.values() if node.kind == "PROTOCOL_POINT"
+        ]),
+    )
+
+
 def parse_source(path: str | Path) -> ControlGraph:
     source = Path(path)
     graph = ControlGraph()
     try:
         root = ET.parse(source).getroot()
-    except ET.ParseError as exc:
+    except (ET.ParseError, OSError) as exc:
         raise ValueError(f"The source XML is not valid: {exc}") from exc
 
     element_nodes: dict[int, str] = {}

@@ -40,6 +40,7 @@ class GatewayBackupInfo:
 
     def to_dict(self) -> dict[str, Any]:
         return {
+            "importKind": "ignition",
             "fileType": "Ignition Gateway Backup",
             "version": self.version,
             "versionFamily": self.version_family,
