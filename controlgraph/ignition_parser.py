@@ -476,6 +476,7 @@ def _read_83_device_documents(root: Path, archive: Path) -> list[tuple[str, str,
             continue
         attrs: dict[str, Any] = {"name": match.group(1)}
         _flatten_config(data, attrs)
+        attrs["deviceName"] = match.group(1)
         attrs["protocol"] = str(attrs.get("type") or attrs.get("protocol") or "")
         display = f"{archive}!{rel}" if archive.is_file() else str(file)
         result.append((rel, display, attrs))
@@ -615,6 +616,7 @@ def _add_resolved_member(
     instance_evidence: Evidence,
 ) -> None:
     template_tag = tag
+    parameters = _resolved_parameters(parameters, _parameters(template_tag))
     tag = _substitute(template_tag, parameters)
     name = _text(tag, "name") or "Unnamed member"
     tag_path = _join_tag_path(path_prefix, name)
@@ -722,20 +724,110 @@ def _add_source(
         attrs["opcItemPathTemplate"] = template_path
     if parameters:
         attrs["resolvedParameters"] = copy.deepcopy(parameters)
+    unresolved_parameters = sorted(set(re.findall(r"\{([^{}]+)}", item_path)), key=str.casefold)
+    if unresolved_parameters:
+        attrs["unresolvedParameters"] = unresolved_parameters
     server = _text(tag, "opcServer", "opcServerName")
     if server:
         attrs["opcServer"] = server
     identity = infer_identity(attrs)
-    device_name = identity.get("device", "")
-    device_record = devices.get(device_name.casefold())
+    device_name, device_record, device_match = _match_configured_device(
+        identity,
+        item_path,
+        parameters or {},
+        devices,
+    )
     if device_record:
         identity = enrich_with_device(identity, device_record[1])
+        identity.setdefault("device", device_name.casefold())
+        attrs["configuredDevice"] = device_name
+        attrs["deviceMatch"] = device_match
     attrs["identity"] = identity
     source_id = stable_id("opc_item", display, location, item_path)
     graph.add_node(ControlNode(source_id, "OPC_ITEM", item_path, "IGNITION", attrs, evidence))
     if device_record:
         graph.add_edge(device_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
+    if unresolved_parameters:
+        message = f"The OPC item path has unresolved parameters: {', '.join(unresolved_parameters)}"
+        issue_id = stable_id("mapping_issue", source_id, message)
+        graph.add_node(
+            ControlNode(
+                issue_id,
+                "MAPPING_ISSUE",
+                message,
+                "IGNITION",
+                {
+                    "status": "unresolved",
+                    "subject": source_id,
+                    "parameters": unresolved_parameters,
+                },
+                evidence,
+            )
+        )
+        graph.add_edge(source_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
+
+
+def _match_configured_device(
+    identity: dict[str, str],
+    item_path: str,
+    parameters: dict[str, Any],
+    devices: dict[str, tuple[str, dict[str, Any]]],
+) -> tuple[str, tuple[str, dict[str, Any]] | None, str]:
+    candidates: list[tuple[str, str]] = []
+    if identity.get("device"):
+        candidates.append(("OPC item device", identity["device"]))
+    parameter_items = [
+        (name, str(value))
+        for name, value in parameters.items()
+        if isinstance(value, (str, int, float)) and value != ""
+    ]
+    parameter_items.sort(key=lambda item: (_device_parameter_priority(item[0]), item[0].casefold()))
+    for name, value in parameter_items:
+        if _device_parameter_priority(name) < 9:
+            candidates.append((f"parameter {name}", value))
+    candidates.append(("resolved OPC item path", item_path))
+
+    for reason, candidate in candidates:
+        for key, record in devices.items():
+            display_name = str(record[1].get("deviceName") or record[1].get("name") or key)
+            aliases = {key, display_name}
+            aliases.update(
+                str(value)
+                for name, value in record[1].items()
+                if isinstance(value, (str, int, float))
+                and any(term in clean_key(name) for term in ("devicename", "connectionname", "iedname"))
+            )
+            if any(_path_contains_name(candidate, alias) for alias in aliases if alias):
+                return display_name, record, reason
+    return "", None, ""
+
+
+def _device_parameter_priority(name: str) -> int:
+    key = clean_key(name)
+    if key in {"device", "devicename", "rtacdevice", "opcdevice"}:
+        return 0
+    if "device" in key:
+        return 1
+    if "ied" in key:
+        return 2
+    if "connection" in key:
+        return 3
+    return 9
+
+
+def _path_contains_name(value: str, name: str) -> bool:
+    candidate = value.strip().strip("[]\"'").casefold()
+    alias = name.strip().strip("[]\"'").casefold()
+    if not candidate or not alias:
+        return False
+    if candidate == alias:
+        return True
+    return re.search(
+        rf"(?<![a-z0-9]){re.escape(alias)}(?![a-z0-9])",
+        candidate,
+        re.I,
+    ) is not None
 
 
 def _tag_roots(data: Any) -> list[tuple[dict[str, Any], str]]:
@@ -803,30 +895,45 @@ def _children(tag: dict[str, Any]) -> list[dict[str, Any]]:
 
 
 def _parameters(tag: dict[str, Any]) -> dict[str, Any]:
+    result: dict[str, Any] = {}
     for key, value in tag.items():
-        if clean_key(key) == "parameters" and isinstance(value, dict):
-            result: dict[str, Any] = {}
+        if clean_key(key) not in {
+            "parameters", "parametervalues", "parameteroverrides", "params",
+        }:
+            continue
+        if isinstance(value, dict):
             for name, item in value.items():
-                result[name] = _parameter_value(item)
-            return result
-    return {}
+                _set_parameter(result, str(name), _parameter_value(item))
+        elif isinstance(value, list):
+            for item in value:
+                if not isinstance(item, dict):
+                    continue
+                name = _text(item, "name", "parameterName", "key")
+                if name:
+                    _set_parameter(result, name, _parameter_value(item))
+    return result
 
 
 def _parameter_value(value: Any) -> Any:
     if isinstance(value, dict):
-        for key, item in value.items():
-            if clean_key(key) in {"value", "binding"}:
-                return _parameter_value(item)
+        for wanted in ("value", "binding"):
+            for key, item in value.items():
+                if clean_key(key) == wanted:
+                    return _parameter_value(item)
+    if isinstance(value, str):
+        return _serialized_binding(value) or value
     return copy.deepcopy(value)
 
 
 def _effective_parameters(definition: dict[str, Any], instance: dict[str, Any]) -> dict[str, Any]:
-    parameters = _parameters(definition)
-    for name, value in _parameters(instance).items():
-        existing = next((key for key in parameters if key.casefold() == name.casefold()), None)
-        if existing is not None:
-            parameters.pop(existing)
-        parameters[name] = value
+    return _resolved_parameters(_parameters(definition), _parameters(instance))
+
+
+def _resolved_parameters(*sources: dict[str, Any]) -> dict[str, Any]:
+    parameters: dict[str, Any] = {}
+    for source in sources:
+        for name, value in source.items():
+            _set_parameter(parameters, name, value)
 
     resolved = copy.deepcopy(parameters)
     for _ in range(max(1, len(resolved) * 2)):
@@ -835,6 +942,13 @@ def _effective_parameters(definition: dict[str, Any], instance: dict[str, Any]) 
             break
         resolved = next_values
     return resolved
+
+
+def _set_parameter(parameters: dict[str, Any], name: str, value: Any) -> None:
+    existing = next((key for key in parameters if key.casefold() == name.casefold()), None)
+    if existing is not None:
+        parameters.pop(existing)
+    parameters[name] = value
 
 
 def _substitute(value: Any, parameters: dict[str, Any]) -> Any:
@@ -928,14 +1042,56 @@ def _text(value: dict[str, Any], *keys: str) -> str:
     wanted = {clean_key(key) for key in keys}
     for key, item in value.items():
         if clean_key(key) in wanted and isinstance(item, (str, int, float)):
-            return str(item).strip()
+            text = str(item).strip()
+            return _serialized_binding(text) or text
         if clean_key(key) in wanted and isinstance(item, dict):
-            for nested_key, nested_value in item.items():
-                if clean_key(nested_key) in {"binding", "value"} and isinstance(
-                    nested_value, (str, int, float)
-                ):
-                    return str(nested_value).strip()
+            for nested_name in ("binding", "value"):
+                for nested_key, nested_value in item.items():
+                    if clean_key(nested_key) == nested_name and isinstance(
+                        nested_value, (str, int, float)
+                    ):
+                        text = str(nested_value).strip()
+                        return _serialized_binding(text) or text
     return ""
+
+
+def _serialized_binding(value: str) -> str:
+    text = value.strip()
+    if not re.search(r"bind\s*type|bindtype", text, re.I) or not re.search(
+        r"\bbinding\b\s*[:=]", text, re.I
+    ):
+        return ""
+    try:
+        parsed = json.loads(text)
+    except json.JSONDecodeError:
+        parsed = None
+    if isinstance(parsed, dict):
+        for key, item in parsed.items():
+            if clean_key(key) == "binding" and isinstance(item, (str, int, float)):
+                return str(item).strip()
+
+    marker = re.search(r"(?:[\"']?binding[\"']?)\s*[:=]\s*", text, re.I)
+    if marker is None:
+        return ""
+    expression = text[marker.end():].strip()
+    if expression[:1] in {"\"", "'"}:
+        quote = expression[0]
+        expression = expression[1:]
+        if quote in expression:
+            expression = expression.split(quote, 1)[0]
+    depth = 0
+    for position, character in enumerate(expression):
+        if character == "{":
+            depth += 1
+        elif character == "}":
+            depth -= 1
+        elif character == "," and depth == 0:
+            expression = expression[:position]
+            break
+    expression = expression.strip()
+    while expression.endswith("}") and expression.count("}") > expression.count("{"):
+        expression = expression[:-1].rstrip()
+    return expression
 
 
 def _bool(value: dict[str, Any], key: str) -> bool:

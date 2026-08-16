@@ -124,7 +124,7 @@ def canonical(identity: Mapping[str, Any]) -> str:
 def enrich_with_device(identity: Mapping[str, str], device: Mapping[str, Any]) -> dict[str, str]:
     result = dict(identity)
     inferred = infer_identity(device)
-    for key in ("host", "unit", "server"):
+    for key in ("host", "unit", "server", "device"):
         if inferred.get(key) and not result.get(key):
             result[key] = inferred[key]
     return result

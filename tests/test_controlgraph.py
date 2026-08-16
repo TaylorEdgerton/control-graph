@@ -107,17 +107,27 @@ class ControlGraphTests(unittest.TestCase):
         source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
         tag = next(node for node in graph.nodes.values() if node.kind == "IGNITION_TAG")
         instance = next(node for node in graph.nodes.values() if node.kind == "UDT_INSTANCE")
-        self.assertEqual(source.name, "Ignition OPC UA Server.Line1.IED_7")
+        device = next(node for node in graph.nodes.values() if node.kind == "IGNITION_DEVICE")
+        self.assertEqual(source.name, "RTAC_A.Binary Input 12")
         self.assertEqual(
             source.attributes["opcItemPathTemplate"],
-            "{OPC_Connection_String}.{IED}",
+            "{OPC_Connection_String}.{Control_Tag}",
         )
         self.assertEqual(
             source.attributes["resolvedParameters"]["OPC_Connection_String"],
-            "Ignition OPC UA Server.Line1",
+            "RTAC_A",
         )
+        self.assertEqual(source.attributes["configuredDevice"], "RTAC_A")
+        self.assertEqual(source.attributes["deviceMatch"], "parameter RTAC_Device")
+        self.assertEqual(source.attributes["identity"]["host"], "10.20.1.20")
+        self.assertEqual(source.attributes["identity"]["unit"], "1")
         self.assertEqual(tag.name, "[default]Area/Motor_1/Status")
-        self.assertEqual(instance.attributes["resolvedParameters"]["IED"], "IED_7")
+        self.assertEqual(instance.attributes["resolvedParameters"]["Control_Tag"], "Binary Input 12")
+        self.assertTrue(any(edge.source == device.id and edge.target == source.id for edge in graph.edges.values()))
+
+        resolved = resolve(parse_sel(SEL), graph)
+        match = next(edge for edge in resolved.edges.values() if edge.kind == "communication_identity_match")
+        self.assertEqual(match.status, "resolved")
 
     def test_unresolved_mapping_is_explicit(self) -> None:
         graph = build_graph(SEL, IGNITION)
@@ -314,32 +324,30 @@ def create_parameterized_backup(root: Path) -> Path:
         "name": "ParameterizedDevice",
         "tagType": "UdtType",
         "parameters": {
-            "Gateway": {"dataType": "String", "value": "Default Gateway"},
-            "Channel": {"dataType": "String", "value": "Default Channel"},
+            "RTAC_Device": {"dataType": "String", "value": "Default Device"},
             "OPC_Connection_String": {
                 "dataType": "String",
-                "value": "{Gateway}.{Channel}",
+                "value": "{RTAC_Device}",
             },
-            "IED": {"dataType": "String", "value": "Default IED"},
+            "Control_Tag": {"dataType": "String", "value": "Binary Input 0"},
         },
         "tags": [{
             "name": "Status",
             "tagType": "AtomicTag",
             "valueSource": "opc",
-            "opcItemPath": {
-                "bindType": "parameter",
-                "binding": "{OPC_Connection_String}.{IED}",
-            },
+            "opcItemPath": (
+                "{bindType=parameter, "
+                "binding={OPC_Connection_String}.{Control_Tag}}"
+            ),
         }],
     }]
     instance = [{
         "name": "Motor_1",
         "tagType": "UdtInstance",
         "typeId": "ParameterizedDevice",
-        "parameters": {
-            "Gateway": {"value": "Ignition OPC UA Server"},
-            "Channel": {"value": "Line1"},
-            "IED": {"value": "IED_7"},
+        "parameterValues": {
+            "RTAC_Device": {"value": "RTAC_A"},
+            "Control_Tag": {"value": "Binary Input 12"},
         },
     }]
     backup = root / "parameterized.gwbk"
@@ -355,6 +363,14 @@ def create_parameterized_backup(root: Path) -> Path:
         archive.writestr(
             "config/resources/core/ignition/tag-definition/default/Area/tags.json",
             json.dumps(instance),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/device/RTAC_A/config.json",
+            json.dumps({
+                "type": "DNP3",
+                "hostname": "10.20.1.20",
+                "destinationAddress": 1,
+            }),
         )
     return backup
 
