@@ -5,7 +5,7 @@ from pathlib import Path
 import re
 import xml.etree.ElementTree as ET
 
-from .identity import clean_key, infer_identity
+from .identity import clean_key, infer_identity, opc_endpoint_identity
 from .model import ControlGraph, ControlNode, Evidence, stable_id
 
 
@@ -65,6 +65,10 @@ def parse_source(path: str | Path) -> ControlGraph:
                 if identity:
                     attributes["identity"] = identity
                 attributes["direction"] = _direction(props, local)
+            elif kind == "SOURCE_DEVICE":
+                endpoint_identity = opc_endpoint_identity(props)
+                if endpoint_identity:
+                    attributes["connectionIdentity"] = endpoint_identity
             node = ControlNode(node_id, kind, name, "SOURCE", attributes, [evidence])
             graph.add_node(node)
             element_nodes[id(element)] = node_id

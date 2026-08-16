@@ -41,3 +41,5 @@ export const TYPE_FILTERS = [
 
 export const FLOW_NODE_WIDTH = 184;
 export const FLOW_NODE_HEIGHT = 76;
+export const MAX_CANVAS_NODES = 100;
+export const MAX_RELATIONSHIP_ROWS = 200;

@@ -131,9 +131,11 @@ function FlowScene({
     <Panel position="top-left">
       <Chip
         size="small"
-        label={!selectedId
-          ? 'Connection overview'
-          : traceMode === 'lineage' ? 'Complete lineage' : `${capitalize(traceMode)} trace`}
+        label={graphView.truncated
+          ? `Canvas limited to ${graphView.nodeLimit} nodes`
+          : !selectedId
+            ? 'Connection overview'
+            : traceMode === 'lineage' ? 'Complete lineage' : `${capitalize(traceMode)} trace`}
         sx={{ bgcolor: 'controlGraph.surface.overlay', border: '1px solid', borderColor: 'divider' }}
       />
     </Panel>
@@ -199,7 +201,11 @@ function ControlFlowNode({ data, selected }) {
     >
       <Typography variant="body2" fontWeight={700} noWrap sx={{ mt: .55 }}>{shortName(node.name)}</Typography>
     </Tooltip>
-    <Typography variant="caption" color="text.secondary" lineHeight={1.1}>{node.system}</Typography>
+    <Typography variant="caption" color="text.secondary" lineHeight={1.1}>
+      {node.attributes?.usedSignalCount !== undefined
+        ? `${node.attributes.usedSignalCount.toLocaleString()} used signals`
+        : node.system}
+    </Typography>
     <Handle type="source" position={Position.Right} style={{ width: 7, height: 7, background: handleColor, borderColor: darkTokens.surface.sunken }} />
   </Paper>;
 }

@@ -14,11 +14,19 @@ import {
 } from '@mui/material';
 import { capitalize, evidenceFiles, labelEdge } from '../graph-utils.js';
 
-export default function RelationshipTable({ index, relationships, selectedEdge, inspectEdge }) {
+export default function RelationshipTable({
+  index, relationships, totalRelationships, selectedEdge, inspectEdge,
+}) {
   return <Paper square elevation={0} sx={{ gridColumn: { lg: '2 / 4' }, gridRow: { lg: 2 }, minWidth: 0, overflow: 'hidden', display: 'flex', flexDirection: 'column' }}>
     <Stack direction="row" alignItems="center" justifyContent="space-between" sx={{ px: 2.5, py: 1.25 }}>
       <Typography variant="h6" fontSize={18}>Evidence / Relationships</Typography>
-      <Typography variant="caption" color="text.secondary">Select a row to see its source evidence</Typography>
+      <Stack direction="row" spacing={1.5} alignItems="center">
+        {totalRelationships > relationships.length && <Chip
+          size="small"
+          label={`Showing ${relationships.length} of ${totalRelationships}`}
+        />}
+        <Typography variant="caption" color="text.secondary">Select a row to see its source evidence</Typography>
+      </Stack>
     </Stack>
     <Divider />
     <TableContainer sx={{ flex: 1 }}>

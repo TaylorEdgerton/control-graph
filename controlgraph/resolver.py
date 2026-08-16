@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from collections import defaultdict
+import ipaddress
 from typing import Any
 
 from .identity import canonical
@@ -15,14 +16,15 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
     graph = ControlGraph()
     graph.merge(source)
     graph.merge(ignition)
+    connection_matches = _resolve_opc_connections(graph)
 
     ignition_sources: dict[str, list[str]] = defaultdict(list)
     for node in graph.nodes.values():
         if node.kind not in IGNITION_PROTOCOL_KINDS:
             continue
-        key = canonical(_identity(node))
-        if key:
-            ignition_sources[key].append(node.id)
+        for key in _identity_keys(_identity(node)):
+            if node.id not in ignition_sources[key]:
+                ignition_sources[key].append(node.id)
 
     matched_sources: set[str] = set()
     for point in list(graph.nodes.values()):
@@ -31,11 +33,26 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
         if str(point.attributes.get("direction", "unknown")) == "in":
             continue
         identity = _identity(point)
-        key = canonical(identity)
-        if not key:
+        keys = _identity_keys(identity)
+        if not keys:
             _add_issue(graph, point, "The protocol point has no complete communication identity", "unresolved")
             continue
-        candidates = ignition_sources.get(key, [])
+        key = keys[0]
+        source_device_id = _point_device(graph, point.id)
+        scoped_connection_id = connection_matches.get(source_device_id or "")
+        candidates: list[str] = []
+        for candidate_key in keys:
+            candidate_ids = ignition_sources.get(candidate_key, [])
+            if scoped_connection_id:
+                candidate_ids = [
+                    candidate
+                    for candidate in candidate_ids
+                    if _ignition_connection(graph, candidate) == scoped_connection_id
+                ]
+            if candidate_ids:
+                key = candidate_key
+                candidates = candidate_ids
+                break
         if len(candidates) == 1:
             source_id = candidates[0]
             matched_sources.add(source_id)
@@ -54,7 +71,6 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
                 attributes={"identityKey": key, "matchedSource": source_id},
                 evidence=evidence,
             )
-            source_device_id = _point_device(graph, point.id)
             if source_device_id and connection_id:
                 _add_device_connection_match(
                     graph,
@@ -93,9 +109,141 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
     return graph
 
 
+def _resolve_opc_connections(graph: ControlGraph) -> dict[str, str]:
+    source_connections = [
+        node for node in graph.nodes.values()
+        if node.kind == "SOURCE_DEVICE" and _endpoint_identity(node)
+    ]
+    ignition_connections = [
+        node for node in graph.nodes.values()
+        if node.kind == "OPC_SERVER_CONNECTION" and _endpoint_identity(node)
+    ]
+    matches: dict[str, str] = {}
+    for source_connection in source_connections:
+        source_endpoint = _endpoint_identity(source_connection)
+        candidates: list[tuple[int, ControlNode, str]] = []
+        for ignition_connection in ignition_connections:
+            target_endpoint = _endpoint_identity(ignition_connection)
+            score, reason = _endpoint_match(source_endpoint, target_endpoint)
+            if score:
+                candidates.append((score, ignition_connection, reason))
+        if not candidates:
+            continue
+        candidates.sort(key=lambda item: (-item[0], item[1].name.casefold(), item[1].id))
+        best_score = candidates[0][0]
+        best = [candidate for candidate in candidates if candidate[0] == best_score]
+        if len(best) != 1:
+            _add_issue(
+                graph,
+                source_connection,
+                f"The OPC UA endpoint matches {len(best)} Ignition connections",
+                "ambiguous",
+                [candidate[1].id for candidate in best],
+                _endpoint_key(source_endpoint),
+            )
+            continue
+        score, ignition_connection, reason = best[0]
+        matches[source_connection.id] = ignition_connection.id
+        evidence = [
+            *source_connection.evidence,
+            *ignition_connection.evidence,
+            Evidence(
+                "resolver",
+                _endpoint_key(source_endpoint),
+                f"The OPC UA connection endpoints match by {reason}",
+            ),
+        ]
+        edge = graph.add_edge(
+            source_connection.id,
+            ignition_connection.id,
+            "device_connection_match",
+            status="resolved",
+            attributes={
+                "mappingSource": "ENDPOINT_IDENTITY",
+                "confidence": score,
+                "matchEvidence": reason,
+                "sourceEndpoint": _endpoint_key(source_endpoint),
+                "ignitionEndpoint": _endpoint_key(_endpoint_identity(ignition_connection)),
+                "matchedPoints": [],
+                "matchedSources": [],
+                "identityKeys": [],
+                "matchedPointCount": 0,
+            },
+            evidence=evidence,
+        )
+        if edge:
+            ignition_connection.attributes["sourceConnectionMatch"] = source_connection.id
+            ignition_connection.attributes["connectionMatchConfidence"] = score
+            ignition_connection.attributes["connectionMatchEvidence"] = reason
+    return matches
+
+
+def _endpoint_identity(node: ControlNode) -> dict[str, Any]:
+    value = node.attributes.get("connectionIdentity", {})
+    return value if isinstance(value, dict) else {}
+
+
+def _endpoint_match(
+    source: dict[str, Any],
+    target: dict[str, Any],
+) -> tuple[int, str]:
+    if str(source.get("port", "")) != str(target.get("port", "")):
+        return 0, ""
+    source_hosts = _endpoint_hosts(source)
+    target_hosts = _endpoint_hosts(target)
+    shared_hosts = source_hosts & target_hosts
+    if not shared_hosts:
+        return 0, ""
+    exact_host = str(source.get("host", "")).casefold() == str(target.get("host", "")).casefold()
+    address_match = any(_is_ip_address(host) for host in shared_hosts)
+    if exact_host and address_match:
+        return 100, "IP address and OPC UA port"
+    if exact_host:
+        return 95, "hostname and OPC UA port"
+    return 90, "configured host alias and OPC UA port"
+
+
+def _endpoint_hosts(identity: dict[str, Any]) -> set[str]:
+    aliases = identity.get("hostAliases", [])
+    return {
+        str(value).strip().casefold().rstrip(".")
+        for value in [identity.get("host", ""), *(aliases if isinstance(aliases, list) else [])]
+        if str(value).strip()
+    }
+
+
+def _endpoint_key(identity: dict[str, Any]) -> str:
+    host = str(identity.get("host", ""))
+    port = str(identity.get("port", ""))
+    return f"opc.tcp://{host}:{port}" if host and port else ""
+
+
+def _is_ip_address(value: str) -> bool:
+    try:
+        ipaddress.ip_address(value)
+    except ValueError:
+        return False
+    return True
+
+
 def _identity(node: ControlNode) -> dict[str, Any]:
     value = node.attributes.get("identity", {})
     return value if isinstance(value, dict) else {}
+
+
+def _identity_keys(identity: dict[str, Any]) -> list[str]:
+    keys: list[str] = []
+    primary = canonical(identity)
+    if primary:
+        keys.append(primary)
+    if str(identity.get("kind", "")).casefold() in {"opc", "opcua"} and identity.get("host"):
+        name_identity = dict(identity)
+        name_identity.pop("host", None)
+        name_identity.pop("port", None)
+        alternate = canonical(name_identity)
+        if alternate and alternate not in keys:
+            keys.append(alternate)
+    return keys
 
 
 def _ignition_connection(graph: ControlGraph, source_id: str) -> str | None:
@@ -157,6 +305,7 @@ def _add_device_connection_match(
     edge.attributes.setdefault("matchedPoints", [])
     edge.attributes.setdefault("matchedSources", [])
     edge.attributes.setdefault("identityKeys", [])
+    edge.attributes.setdefault("mappingSource", "POINT_IDENTITY")
     _append_unique(edge.attributes["matchedPoints"], point_id)
     _append_unique(edge.attributes["matchedSources"], source_id)
     _append_unique(edge.attributes["identityKeys"], identity_key)

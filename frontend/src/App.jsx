@@ -15,6 +15,7 @@ import {
   findLineage,
   nodeStatus,
   relationshipRows,
+  relationshipTotal,
   searchNodes,
 } from './graph-utils.js';
 
@@ -60,6 +61,10 @@ export default function App() {
   );
   const relationships = useMemo(
     () => relationshipRows(index, selectedId, graphView.edgeIds),
+    [index, selectedId, graphView],
+  );
+  const totalRelationships = useMemo(
+    () => relationshipTotal(index, selectedId, graphView.edgeIds),
     [index, selectedId, graphView],
   );
 
@@ -188,6 +193,7 @@ export default function App() {
       <RelationshipTable
         index={index}
         relationships={relationships}
+        totalRelationships={totalRelationships}
         selectedEdge={evidenceEdge}
         inspectEdge={setEvidenceEdge}
       />

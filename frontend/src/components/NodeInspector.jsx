@@ -43,6 +43,7 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
           <InspectorRow label="Name" value={node.attributes?.displayName || node.name} />
           <InspectorRow label="IEC path" value={node.attributes?.iecPath} />
           <InspectorRow label="Namespace" value={node.attributes?.namespaceUri} />
+          <InspectorRow label="Namespace index" value={node.attributes?.namespaceIndex} />
           <InspectorRow label="Identifier type" value={node.attributes?.identifierType} />
           <InspectorRow label="Raw NodeId" value={node.attributes?.rawNodeId} />
         </>}
@@ -50,7 +51,12 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
           <InspectorRow label="Connection" value={node.attributes?.connectionName || node.name} />
           <InspectorRow label="Endpoint" value={connectionEndpoint(node.attributes)} />
           <InspectorRow label="Namespaces" value={(node.attributes?.namespaceUris || []).join(', ')} />
+          <InspectorRow label="Namespace indexes" value={(node.attributes?.namespaceIndexes || []).join(', ')} />
           <InspectorRow label="Configuration" value={capitalize(node.attributes?.configurationStatus || 'configured')} />
+          <InspectorRow label="Used by Ignition" value={formatCount(node.attributes?.usedSignalCount)} />
+          <InspectorRow label="Referenced tags" value={formatCount(node.attributes?.referencedTagCount)} />
+          <InspectorRow label="Available signals" value="Not imported" />
+          <InspectorRow label="Source match" value={connectionMatch(node.attributes)} />
         </>}
         <InspectorRow label="Status" value={<Chip
           size="small"
@@ -81,6 +87,15 @@ function connectionEndpoint(attributes = {}) {
     || attributes.endpoint
     || attributes.discoveryUrl
     || attributes.DISCOVERYURL;
+}
+
+function connectionMatch(attributes = {}) {
+  if (!attributes.connectionMatchEvidence) return '';
+  return `${attributes.connectionMatchEvidence} (${attributes.connectionMatchConfidence}%)`;
+}
+
+function formatCount(value) {
+  return Number.isFinite(Number(value)) ? Number(value).toLocaleString() : '';
 }
 
 function InspectorRow({ label, value }) {

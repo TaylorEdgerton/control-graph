@@ -4,6 +4,8 @@ import {
   FLOW_NODE_HEIGHT,
   FLOW_NODE_WIDTH,
   KIND_LABELS,
+  MAX_CANVAS_NODES,
+  MAX_RELATIONSHIP_ROWS,
   SYSTEM_FILTERS,
   TYPE_FILTERS,
 } from './constants.js';
@@ -37,7 +39,9 @@ export function buildBrowserTree(nodes) {
             label: `${KIND_LABELS[kind] || kind} (${items.length})`,
             children: kind === 'IGNITION_TAG'
               ? buildIgnitionTagTree(items, system, kind)
-              : items
+              : kind === 'OPC_NODE'
+                ? buildOpcNodeTree(items, system, kind)
+                : items
                 .sort((left, right) => left.name.localeCompare(right.name))
                 .map((node) => ({ id: `node:${node.id}`, label: shortName(node.name) })),
           })),
@@ -55,10 +59,30 @@ export function ignitionTagPathSegments(name) {
   ];
 }
 
+export function opcNodePathSegments(node) {
+  const attributes = node.attributes || {};
+  const connection = attributes.connectionName
+    || attributes.configuredConnection
+    || attributes.inferredConnection
+    || attributes.identity?.server
+    || 'Unassigned OPC connection';
+  const iecPath = String(attributes.iecPath || attributes.displayName || node.name || '').trim();
+  const path = iecPath.split('.').map((part) => part.trim()).filter(Boolean);
+  return [connection, ...(path.length ? path : [node.name])];
+}
+
 function buildIgnitionTagTree(nodes, system, kind) {
+  return buildNestedNodeTree(nodes, system, kind, (node) => ignitionTagPathSegments(node.name));
+}
+
+function buildOpcNodeTree(nodes, system, kind) {
+  return buildNestedNodeTree(nodes, system, kind, opcNodePathSegments);
+}
+
+function buildNestedNodeTree(nodes, system, kind, pathSegments) {
   const root = createTagBranch('');
   for (const node of [...nodes].sort((left, right) => left.name.localeCompare(right.name))) {
-    const segments = ignitionTagPathSegments(node.name);
+    const segments = pathSegments(node);
     let branch = root;
     for (const segment of segments.length ? segments : [node.name]) {
       if (!branch.children.has(segment)) branch.children.set(segment, createTagBranch(segment));
@@ -147,6 +171,7 @@ export function findLineage(index, selectedId) {
       if (current.nodeIds.length > 30) continue;
       for (const edge of index.outgoing.get(current.nodeId) || []) {
         if (edge.status !== 'resolved' || index.nodes.get(edge.target)?.kind === 'MAPPING_ISSUE') continue;
+        if (!component.has(edge.target)) continue;
         const depth = current.nodeIds.length;
         if ((bestDepth.get(edge.target) ?? Infinity) < depth) continue;
         bestDepth.set(edge.target, depth);
@@ -163,15 +188,22 @@ export function findLineage(index, selectedId) {
 
 export function buildGraphView(index, start, mode, lineage) {
   if (!start || !index.nodes.has(start)) return buildConnectionOverview(index);
+  if (isConnectionNode(index.nodes.get(start))) return buildSelectedConnectionView(index, start);
   if (mode === 'lineage') {
     const nodeIds = new Set(lineage?.nodeIds || [start]);
     const edgeIds = new Set(lineage?.edgeIds || []);
+    let truncated = false;
     for (const nodeId of [...nodeIds]) {
       const incident = [...(index.incoming.get(nodeId) || []), ...(index.outgoing.get(nodeId) || [])];
       for (const edge of incident) {
         if (edge.status !== 'resolved') continue;
         const other = edge.source === nodeId ? edge.target : edge.source;
         if (index.nodes.get(other)?.kind === 'MAPPING_ISSUE') continue;
+        if (isContainerFanout(index, edge, nodeId) && !nodeIds.has(other)) continue;
+        if (!nodeIds.has(other) && nodeIds.size >= MAX_CANVAS_NODES) {
+          truncated = true;
+          continue;
+        }
         nodeIds.add(other);
         edgeIds.add(edge.id);
       }
@@ -179,25 +211,31 @@ export function buildGraphView(index, start, mode, lineage) {
     for (const edge of index.edges.values()) {
       if (edge.status === 'resolved' && nodeIds.has(edge.source) && nodeIds.has(edge.target)) edgeIds.add(edge.id);
     }
-    return { nodeIds: [...nodeIds], edgeIds: [...edgeIds] };
+    return boundedGraphView(index, [start, ...nodeIds], [...edgeIds], truncated);
   }
 
   const nodeIds = new Set([start]);
   const edgeIds = new Set();
   const queue = [start];
-  while (queue.length && nodeIds.size < 300) {
+  let truncated = false;
+  while (queue.length) {
     const current = queue.shift();
     const edges = mode === 'upstream' ? (index.incoming.get(current) || []) : (index.outgoing.get(current) || []);
     for (const edge of edges) {
       const next = mode === 'upstream' ? edge.source : edge.target;
-      edgeIds.add(edge.id);
+      if (isContainerFanout(index, edge, current)) continue;
       if (!nodeIds.has(next)) {
+        if (nodeIds.size >= MAX_CANVAS_NODES) {
+          truncated = true;
+          continue;
+        }
         nodeIds.add(next);
         queue.push(next);
       }
+      edgeIds.add(edge.id);
     }
   }
-  return { nodeIds: [...nodeIds], edgeIds: [...edgeIds] };
+  return boundedGraphView(index, [start, ...nodeIds], [...edgeIds], truncated);
 }
 
 function buildConnectionOverview(index) {
@@ -215,18 +253,64 @@ function buildConnectionOverview(index) {
       nodeIds.add(node.id);
     }
   }
-  return { nodeIds: [...nodeIds].slice(0, 300), edgeIds };
+  return boundedGraphView(index, [...nodeIds], edgeIds);
+}
+
+function buildSelectedConnectionView(index, start) {
+  const edgeIds = [...(index.incoming.get(start) || []), ...(index.outgoing.get(start) || [])]
+    .filter((edge) => edge.kind === 'device_connection_match' && edge.status === 'resolved')
+    .map((edge) => edge.id);
+  const nodeIds = [start];
+  for (const edgeId of edgeIds) {
+    const edge = index.edges.get(edgeId);
+    nodeIds.push(edge.source === start ? edge.target : edge.source);
+  }
+  return boundedGraphView(index, nodeIds, edgeIds);
+}
+
+function boundedGraphView(index, requestedNodeIds, requestedEdgeIds, alreadyTruncated = false) {
+  const available = [...new Set(requestedNodeIds)].filter((nodeId) => index.nodes.has(nodeId));
+  const retained = available.slice(0, MAX_CANVAS_NODES);
+  const retainedIds = new Set(retained);
+  const edgeIds = [...new Set(requestedEdgeIds)].filter((edgeId) => {
+    const edge = index.edges.get(edgeId);
+    return edge && retainedIds.has(edge.source) && retainedIds.has(edge.target);
+  });
+  const truncated = alreadyTruncated || available.length > retained.length;
+  return {
+    nodeIds: retained,
+    edgeIds,
+    ...(truncated ? { truncated: true, nodeLimit: MAX_CANVAS_NODES } : {}),
+  };
+}
+
+function isConnectionNode(node) {
+  return ['SOURCE_DEVICE', 'IGNITION_DEVICE', 'OPC_SERVER_CONNECTION'].includes(node?.kind);
+}
+
+function isContainerFanout(index, edge, current) {
+  if (edge.source !== current) return false;
+  const sourceKind = index.nodes.get(edge.source)?.kind;
+  return (
+    edge.kind === 'provides' && ['IGNITION_DEVICE', 'OPC_SERVER_CONNECTION'].includes(sourceKind)
+  ) || (
+    edge.kind === 'contains' && ['SOURCE_DEVICE', 'UDT_INSTANCE', 'IGNITION_TAG'].includes(sourceKind)
+  );
 }
 
 export function buildFlowElements(index, graphView, selectedId, systemFilters, typeFilters) {
   const selectedKinds = TYPE_FILTERS.filter((group) => typeFilters.includes(group.label)).flatMap((group) => group.kinds);
-  const visibleIds = new Set(graphView.nodeIds.filter((nodeId) => {
+  const orderedIds = selectedId
+    ? [selectedId, ...graphView.nodeIds.filter((nodeId) => nodeId !== selectedId)]
+    : graphView.nodeIds;
+  const visibleIds = new Set(orderedIds.filter((nodeId) => {
     const node = index.nodes.get(nodeId);
     if (!node) return false;
     if (nodeId === selectedId) return true;
+    if (selectedId) return true;
     if (systemFilters.length && !systemFilters.includes(node.system)) return false;
     return !selectedKinds.length || selectedKinds.includes(node.kind);
-  }));
+  }).slice(0, MAX_CANVAS_NODES));
   const controlEdges = graphView.edgeIds
     .map((edgeId) => index.edges.get(edgeId))
     .filter((edge) => edge && visibleIds.has(edge.source) && visibleIds.has(edge.target));
@@ -281,6 +365,23 @@ export function buildFlowElements(index, graphView, selectedId, systemFilters, t
 }
 
 export function relationshipRows(index, selectedId, preferredIds) {
+  return relationshipCandidates(index, selectedId, preferredIds).slice(0, MAX_RELATIONSHIP_ROWS);
+}
+
+export function relationshipTotal(index, selectedId, preferredIds) {
+  return relationshipCandidates(index, selectedId, preferredIds).length;
+}
+
+function relationshipCandidates(index, selectedId, preferredIds) {
+  const selected = index.nodes.get(selectedId);
+  if (isConnectionNode(selected)) {
+    return [...(index.incoming.get(selectedId) || []), ...(index.outgoing.get(selectedId) || [])]
+      .sort((left, right) => {
+        const leftOrder = left.kind === 'provides' ? 0 : 1;
+        const rightOrder = right.kind === 'provides' ? 0 : 1;
+        return leftOrder - rightOrder || left.id.localeCompare(right.id);
+      });
+  }
   const preferred = [...new Set(preferredIds)].map((id) => index.edges.get(id)).filter(Boolean);
   if (preferred.length) return preferred;
   return [...(index.incoming.get(selectedId) || []), ...(index.outgoing.get(selectedId) || [])];
@@ -352,6 +453,7 @@ function connectedNodes(index, start) {
     const edges = [...(index.outgoing.get(current) || []), ...(index.incoming.get(current) || [])];
     for (const edge of edges) {
       if (index.nodes.get(edge.source)?.kind === 'MAPPING_ISSUE' || index.nodes.get(edge.target)?.kind === 'MAPPING_ISSUE') continue;
+      if (isContainerFanout(index, edge, current)) continue;
       const next = edge.source === current ? edge.target : edge.source;
       if (!seen.has(next)) {
         seen.add(next);

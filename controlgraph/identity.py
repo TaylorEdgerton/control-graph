@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import re
 from typing import Any, Mapping
+from urllib.parse import urlsplit
 
 
 ALIASES = {
@@ -154,7 +155,79 @@ def infer_identity(values: Mapping[str, Any], inherited: Mapping[str, Any] | Non
                 "nodeid": nodeid,
             }
         )
+    if result.get("kind") == "opcua":
+        endpoint = opc_endpoint_identity(merged, assume_opc=True)
+        if endpoint.get("host") and not result.get("host"):
+            result["host"] = str(endpoint["host"])
+        if endpoint.get("port") and not result.get("port"):
+            result["port"] = str(endpoint["port"])
     return result
+
+
+def opc_endpoint_identity(
+    values: Mapping[str, Any],
+    *,
+    assume_opc: bool = False,
+) -> dict[str, Any]:
+    """Return explicit OPC endpoint evidence without assuming missing configuration."""
+    flat = flattened(values)
+    endpoint = next(
+        (
+            flat.get(clean_key(key), "")
+            for key in ("endpointUrl", "discoveryUrl", "serverUrl", "endpoint")
+            if flat.get(clean_key(key), "")
+        ),
+        "",
+    )
+    protocol = first(values, "protocol").casefold()
+    opc_evidence = (
+        assume_opc
+        or endpoint.casefold().startswith(("opc.tcp://", "opc.https://"))
+        or "opc" in protocol
+        or any("opc" in key for key in flat)
+    )
+    if not opc_evidence:
+        return {}
+
+    aliases: list[str] = []
+    for key in ("host", "hostname", "ip", "ipAddress", "hostOverride", "bindAddress"):
+        value = flat.get(clean_key(key), "").strip().casefold()
+        if value and value not in aliases:
+            aliases.append(value)
+
+    endpoint_host = ""
+    endpoint_port = ""
+    if endpoint:
+        candidate = endpoint if "://" in endpoint else f"//{endpoint}"
+        try:
+            parsed = urlsplit(candidate)
+            endpoint_host = (parsed.hostname or "").strip().casefold()
+            endpoint_port = str(parsed.port or "")
+        except ValueError:
+            endpoint_host = ""
+            endpoint_port = ""
+        if endpoint_host and endpoint_host not in aliases:
+            aliases.append(endpoint_host)
+
+    explicit_port = next(
+        (
+            flat.get(clean_key(key), "")
+            for key in ("port", "opcPort", "serverPort", "endpointPort")
+            if flat.get(clean_key(key), "")
+        ),
+        "",
+    )
+    port = normalize_number(endpoint_port or explicit_port)
+    host = endpoint_host or (aliases[0] if aliases else "")
+    if not host or not port:
+        return {}
+    return {
+        "kind": "opcua_endpoint",
+        "host": host,
+        "port": port,
+        "hostAliases": aliases,
+        **({"endpointUrl": endpoint} if endpoint else {}),
+    }
 
 
 def canonical(identity: Mapping[str, Any]) -> str:
@@ -167,7 +240,8 @@ def canonical(identity: Mapping[str, Any]) -> str:
         return _join(kind, endpoint, identity.get("unit", ""), normalize_object(identity.get("object", "")), normalize_number(identity.get("index", "")))
     if kind in {"opcua", "opc"}:
         endpoint = identity.get("host") or identity.get("server") or identity.get("device") or ""
-        return _join(kind, endpoint, str(identity.get("nodeid", "")).lower())
+        port = identity.get("port", "") if identity.get("host") else ""
+        return _join(kind, endpoint, port, str(identity.get("nodeid", "")).lower())
     return ""
 
 
@@ -177,6 +251,12 @@ def enrich_with_device(identity: Mapping[str, str], device: Mapping[str, Any]) -
     for key in ("host", "unit", "server", "device"):
         if inferred.get(key) and not result.get(key):
             result[key] = inferred[key]
+    endpoint = device.get("connectionIdentity")
+    if not isinstance(endpoint, Mapping):
+        endpoint = opc_endpoint_identity(device, assume_opc=result.get("kind") == "opcua")
+    for key in ("host", "port"):
+        if endpoint.get(key) and not result.get(key):
+            result[key] = str(endpoint[key])
     return result
 
 

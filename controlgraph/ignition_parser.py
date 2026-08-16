@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+from collections import defaultdict
 from contextlib import contextmanager
 import copy
 from dataclasses import dataclass
@@ -13,7 +14,7 @@ from typing import Any, Iterator
 import zipfile
 import xml.etree.ElementTree as ET
 
-from .identity import clean_key, enrich_with_device, infer_identity
+from .identity import canonical, clean_key, enrich_with_device, infer_identity, opc_endpoint_identity
 from .model import ControlGraph, ControlNode, Evidence, stable_id
 
 
@@ -162,6 +163,7 @@ def parse_ignition(
             path_prefix=path_prefix,
             definition_resource=definition_resource,
         )
+    _finalize_connection_usage(graph)
     return graph
 
 
@@ -492,6 +494,9 @@ def _read_sqlite_opc_connections(
             attrs["connectionName"] = name
             attrs["connectionKind"] = "opc-client"
             attrs["protocol"] = _text(attrs, "type", "connectionType", "serverType") or "OPC UA"
+            endpoint_identity = opc_endpoint_identity(attrs, assume_opc=True)
+            if endpoint_identity:
+                attrs["connectionIdentity"] = endpoint_identity
             evidence = Evidence(display, f"{table}/{position}", _json_detail(attrs))
             existing = devices.get(name.casefold())
             if existing:
@@ -608,6 +613,10 @@ def _find_devices(
                 if attrs.get("connectionKind") == "opc-client"
                 else "IGNITION_DEVICE"
             )
+            if kind == "OPC_SERVER_CONNECTION":
+                endpoint_identity = opc_endpoint_identity(attrs, assume_opc=True)
+                if endpoint_identity:
+                    attrs["connectionIdentity"] = endpoint_identity
             node_id = stable_id(kind, display, location, name)
             graph.add_node(ControlNode(node_id, kind, name, "IGNITION", attrs, [evidence]))
             devices[name.casefold()] = (node_id, attrs)
@@ -981,7 +990,7 @@ def _add_source(
         parameters or {},
         devices,
     )
-    external_opc_node = identity.get("kind") == "opcua" and bool(identity.get("namespaceUri"))
+    external_opc_node = identity.get("kind") == "opcua"
     connection_configured = bool(
         connection_record and connection_record[1].get("configurationStatus") != "inferred"
     )
@@ -990,13 +999,23 @@ def _add_source(
             graph,
             devices,
             server,
-            identity["namespaceUri"],
+            identity.get("namespaceUri", ""),
+            identity.get("namespaceIndex", ""),
             display,
             evidence,
         )
-        connection_match = "OPC server reference" if server else "namespace URI"
+        connection_match = (
+            "OPC server reference"
+            if server
+            else "namespace URI" if identity.get("namespaceUri") else "namespace index"
+        )
     elif external_opc_node and connection_record:
-        _add_connection_namespace(graph, connection_record, identity["namespaceUri"])
+        _add_connection_namespace(
+            graph,
+            connection_record,
+            identity.get("namespaceUri", ""),
+            identity.get("namespaceIndex", ""),
+        )
     if connection_record:
         identity = enrich_with_device(identity, connection_record[1])
         connection_kind = graph.nodes[connection_record[0]].kind
@@ -1012,18 +1031,23 @@ def _add_source(
             attrs["inferredConnection"] = connection_name
             attrs["connectionConfigured"] = False
             attrs["connectionMatch"] = connection_match
+        attrs["connectionId"] = connection_record[0]
+        attrs["connectionName"] = connection_name
     if external_opc_node:
         attrs.update({
             "displayName": identity.get("displayName", item_path),
             "iecPath": identity.get("iecPath", ""),
             "namespaceUri": identity.get("namespaceUri", ""),
+            "namespaceIndex": identity.get("namespaceIndex", ""),
             "identifierType": identity.get("identifierTypeName", identity.get("identifierType", "")),
             "rawNodeId": identity.get("nodeid", item_path),
         })
     attrs["identity"] = identity
     source_kind = "OPC_NODE" if external_opc_node else "OPC_ITEM"
     source_name = str(identity.get("displayName") or item_path) if external_opc_node else item_path
-    source_id = stable_id(source_kind, display, location, item_path)
+    source_scope = connection_record[0] if connection_record else display
+    source_identity = canonical(identity) or item_path.casefold()
+    source_id = stable_id(source_kind, source_scope, source_identity)
     graph.add_node(ControlNode(source_id, source_kind, source_name, "IGNITION", attrs, evidence))
     if connection_record:
         graph.add_edge(connection_record[0], source_id, "provides", evidence=evidence)
@@ -1046,7 +1070,8 @@ def _add_source(
                 "status": "unresolved",
                 "subject": issue_subject_id,
                 "opcServer": server_name,
-                "namespaceUri": identity["namespaceUri"],
+                "namespaceUri": identity.get("namespaceUri", ""),
+                "namespaceIndex": identity.get("namespaceIndex", ""),
                 "nodeId": identity.get("nodeid", ""),
             },
             evidence,
@@ -1060,26 +1085,57 @@ def _add_source(
         )
 
 
+def _finalize_connection_usage(graph: ControlGraph) -> None:
+    connection_kinds = {"IGNITION_DEVICE", "OPC_SERVER_CONNECTION"}
+    signal_kinds = {"OPC_ITEM", "OPC_NODE"}
+    signals_by_connection: dict[str, set[str]] = defaultdict(set)
+    tags_by_signal: dict[str, set[str]] = defaultdict(set)
+    for edge in graph.edges.values():
+        if (
+            edge.kind == "provides"
+            and graph.nodes[edge.source].kind in connection_kinds
+            and graph.nodes[edge.target].kind in signal_kinds
+        ):
+            signals_by_connection[edge.source].add(edge.target)
+        elif edge.kind == "drives" and graph.nodes[edge.source].kind in signal_kinds:
+            tags_by_signal[edge.source].add(edge.target)
+
+    for connection in graph.nodes.values():
+        if connection.kind not in connection_kinds:
+            continue
+        signal_ids = signals_by_connection[connection.id]
+        tag_ids = set().union(*(tags_by_signal[signal_id] for signal_id in signal_ids)) if signal_ids else set()
+        connection.attributes["usedSignalCount"] = len(signal_ids)
+        connection.attributes["referencedTagCount"] = len(tag_ids)
+    for signal in graph.nodes.values():
+        if signal.kind not in signal_kinds:
+            continue
+        signal.attributes["referencedTagCount"] = len(tags_by_signal[signal.id])
+
+
 def _ensure_opc_server_root(
     graph: ControlGraph,
     devices: dict[str, tuple[str, dict[str, Any]]],
     server: str,
     namespace_uri: str,
+    namespace_index: str,
     display: str,
     evidence: list[Evidence],
 ) -> tuple[str, tuple[str, dict[str, Any]]]:
-    name = server or f"OPC namespace: {namespace_uri}"
+    namespace_reference = namespace_uri or (f"ns={namespace_index}" if namespace_index else "unspecified")
+    name = server or f"OPC namespace: {namespace_reference}"
     key = name.casefold()
     existing = devices.get(key)
     if existing:
-        _add_connection_namespace(graph, existing, namespace_uri)
+        _add_connection_namespace(graph, existing, namespace_uri, namespace_index)
         return name, existing
     attrs: dict[str, Any] = {
         "name": name,
         "connectionName": server,
         "connectionKind": "opc-server-reference" if server else "opc-namespace",
         "configurationStatus": "inferred",
-        "namespaceUris": [namespace_uri],
+        "namespaceUris": [namespace_uri] if namespace_uri else [],
+        "namespaceIndexes": [namespace_index] if namespace_index else [],
     }
     node_id = stable_id("ignition_opc_server", display, name)
     graph.add_node(
@@ -1094,11 +1150,18 @@ def _add_connection_namespace(
     graph: ControlGraph,
     record: tuple[str, dict[str, Any]],
     namespace_uri: str,
+    namespace_index: str = "",
 ) -> None:
-    namespaces = record[1].setdefault("namespaceUris", [])
-    if namespace_uri not in namespaces:
-        namespaces.append(namespace_uri)
-    graph.nodes[record[0]].attributes["namespaceUris"] = namespaces
+    if namespace_uri:
+        namespaces = record[1].setdefault("namespaceUris", [])
+        if namespace_uri not in namespaces:
+            namespaces.append(namespace_uri)
+        graph.nodes[record[0]].attributes["namespaceUris"] = namespaces
+    if namespace_index:
+        indexes = record[1].setdefault("namespaceIndexes", [])
+        if namespace_index not in indexes:
+            indexes.append(namespace_index)
+        graph.nodes[record[0]].attributes["namespaceIndexes"] = indexes
 
 
 def _match_configured_connection(
@@ -1112,7 +1175,7 @@ def _match_configured_connection(
         candidates.append(("OPC server", identity["server"]))
     if identity.get("device"):
         candidates.append(("OPC item device", identity["device"]))
-    external_opc_node = identity.get("kind") == "opcua" and bool(identity.get("namespaceUri"))
+    external_opc_node = identity.get("kind") == "opcua"
     parameter_items = [
         (name, str(value))
         for name, value in parameters.items()

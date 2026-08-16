@@ -288,6 +288,130 @@ class ControlGraphTests(unittest.TestCase):
             for edge in namespace_graph.edges.values()
         ))
 
+    def test_shared_opc_node_is_deduplicated_and_counted_once(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_shared_codesys_signal_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        signals = [node for node in graph.nodes.values() if node.kind == "OPC_NODE"]
+        connection = next(
+            node for node in graph.nodes.values() if node.kind == "OPC_SERVER_CONNECTION"
+        )
+        self.assertEqual(len(signals), 1)
+        self.assertEqual(signals[0].attributes["referencedTagCount"], 2)
+        self.assertEqual(connection.attributes["usedSignalCount"], 1)
+        self.assertEqual(connection.attributes["referencedTagCount"], 2)
+        self.assertEqual(len([
+            edge for edge in graph.edges.values()
+            if edge.source == signals[0].id and edge.kind == "drives"
+        ]), 2)
+
+    def test_numeric_namespace_node_keeps_an_inferred_connection_upstream(self) -> None:
+        item_path = "ns=2;s=|var|Logic.Application.Program.Struct.Voltage"
+        identity = parse_opc_item(item_path)
+        self.assertEqual(identity["kind"], "opcua")
+        self.assertEqual(identity["namespaceIndex"], "2")
+        self.assertEqual(identity["displayName"], "Program.Struct.Voltage")
+
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_numeric_namespace_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        signal = next(node for node in graph.nodes.values() if node.kind == "OPC_NODE")
+        connection = next(
+            node for node in graph.nodes.values() if node.kind == "OPC_SERVER_CONNECTION"
+        )
+        tag = next(node for node in graph.nodes.values() if node.kind == "IGNITION_TAG")
+        self.assertEqual(signal.attributes["namespaceIndex"], "2")
+        self.assertEqual(connection.attributes["namespaceIndexes"], ["2"])
+        self.assertEqual(connection.attributes["usedSignalCount"], 1)
+        self.assertTrue(any(
+            edge.source == connection.id
+            and edge.target == signal.id
+            and edge.kind == "provides"
+            for edge in graph.edges.values()
+        ))
+        self.assertTrue(any(
+            edge.source == signal.id and edge.target == tag.id and edge.kind == "drives"
+            for edge in graph.edges.values()
+        ))
+
+    def test_opc_connections_match_by_explicit_endpoint_before_points(self) -> None:
+        source_graph = ControlGraph()
+        source_connection_id = stable_id("source_device", "plc")
+        point_id = stable_id("protocol_point", "voltage")
+        source_graph.add_node(ControlNode(
+            source_connection_id,
+            "SOURCE_DEVICE",
+            "PLC project",
+            "SOURCE",
+            {"connectionIdentity": {
+                "kind": "opcua_endpoint",
+                "host": "10.20.30.40",
+                "port": "4840",
+                "hostAliases": ["10.20.30.40"],
+            }},
+        ))
+        source_graph.add_node(ControlNode(
+            point_id,
+            "PROTOCOL_POINT",
+            "Voltage",
+            "SOURCE",
+            {"direction": "out", "identity": {
+                "kind": "opcua",
+                "host": "10.20.30.40",
+                "port": "4840",
+                "nodeid": "nsu=plant;s=voltage",
+            }},
+        ))
+        source_graph.add_edge(source_connection_id, point_id, "contains")
+
+        ignition_graph = ControlGraph()
+        ignition_connection_id = stable_id("ignition_connection", "plc")
+        opc_node_id = stable_id("opc_node", "voltage")
+        ignition_graph.add_node(ControlNode(
+            ignition_connection_id,
+            "OPC_SERVER_CONNECTION",
+            "PLC_OPCUA",
+            "IGNITION",
+            {"connectionIdentity": {
+                "kind": "opcua_endpoint",
+                "host": "10.20.30.40",
+                "port": "4840",
+                "hostAliases": ["10.20.30.40"],
+            }},
+        ))
+        ignition_graph.add_node(ControlNode(
+            opc_node_id,
+            "OPC_NODE",
+            "Voltage",
+            "IGNITION",
+            {"identity": {
+                "kind": "opcua",
+                "host": "10.20.30.40",
+                "port": "4840",
+                "nodeid": "nsu=plant;s=voltage",
+            }},
+        ))
+        ignition_graph.add_edge(ignition_connection_id, opc_node_id, "provides")
+
+        graph = resolve(source_graph, ignition_graph)
+        connection_match = next(
+            edge for edge in graph.edges.values()
+            if edge.source == source_connection_id
+            and edge.target == ignition_connection_id
+            and edge.kind == "device_connection_match"
+        )
+        point_match = next(
+            edge for edge in graph.edges.values()
+            if edge.source == point_id and edge.kind == "communication_identity_match"
+        )
+        self.assertEqual(connection_match.attributes["mappingSource"], "ENDPOINT_IDENTITY")
+        self.assertEqual(connection_match.attributes["confidence"], 100)
+        self.assertEqual(connection_match.attributes["matchEvidence"], "IP address and OPC UA port")
+        self.assertEqual(connection_match.attributes["matchedPointCount"], 1)
+        self.assertEqual(point_match.target, ignition_connection_id)
+
     def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             backup = create_unresolved_parameter_backup(Path(temp))
@@ -763,6 +887,62 @@ def create_codesys_parameter_backup(
                 "hostname": "10.20.1.30",
                 "unitId": 1,
             }),
+        )
+    return backup
+
+
+def create_shared_codesys_signal_backup(root: Path) -> Path:
+    item_path = (
+        "nsu=CODESYSSPV3/3S/IecVarAccess;"
+        "s=|var|Logic.Application.Meter.Voltage"
+    )
+    backup = root / "shared-codesys-signal.gwbk"
+    tags = [
+        {
+            "name": name,
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcServer": "CODESYS Connection",
+            "opcItemPath": item_path,
+        }
+        for name in ("Voltage", "VoltageAlias")
+    ]
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/tags.json",
+            json.dumps(tags),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/client-connection/"
+            "CODESYS Connection/config.json",
+            json.dumps({
+                "name": "CODESYS Connection",
+                "type": "OPC UA",
+                "endpointUrl": "opc.tcp://codesys-controller:4840",
+            }),
+        )
+    return backup
+
+
+def create_numeric_namespace_backup(root: Path) -> Path:
+    backup = root / "numeric-namespace.gwbk"
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/tags.json",
+            json.dumps([{
+                "name": "NestedVoltage",
+                "tagType": "AtomicTag",
+                "valueSource": "opc",
+                "opcItemPath": "ns=2;s=|var|Logic.Application.Program.Struct.Voltage",
+            }]),
         )
     return backup
 
