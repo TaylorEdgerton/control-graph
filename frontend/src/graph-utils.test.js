@@ -57,6 +57,24 @@ test('no canvas selection shows the root connection overview', () => {
   });
 });
 
+test('third-party OPC server connections appear in the connection overview', () => {
+  const model = {
+    nodes: [{
+      id: 'codesys',
+      name: 'CODESYS PLC',
+      kind: 'OPC_SERVER_CONNECTION',
+      system: 'IGNITION',
+      attributes: {},
+    }],
+    edges: [],
+  };
+
+  assert.deepEqual(buildGraphView(buildIndex(model), null, 'lineage', null), {
+    nodeIds: ['codesys'],
+    edgeIds: [],
+  });
+});
+
 function ignitionTag(id, name) {
   return { id, name, kind: 'IGNITION_TAG', system: 'IGNITION', attributes: {} };
 }

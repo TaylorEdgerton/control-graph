@@ -39,6 +39,19 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
         <InspectorRow label="Upstream count" value={upstreamCount} />
         <InspectorRow label="Downstream count" value={downstreamCount} />
         <InspectorRow label="Protocol mapping" value={identityLabel(node.attributes?.identity)} />
+        {node.kind === 'OPC_NODE' && <>
+          <InspectorRow label="Name" value={node.attributes?.displayName || node.name} />
+          <InspectorRow label="IEC path" value={node.attributes?.iecPath} />
+          <InspectorRow label="Namespace" value={node.attributes?.namespaceUri} />
+          <InspectorRow label="Identifier type" value={node.attributes?.identifierType} />
+          <InspectorRow label="Raw NodeId" value={node.attributes?.rawNodeId} />
+        </>}
+        {node.kind === 'OPC_SERVER_CONNECTION' && <>
+          <InspectorRow label="Connection" value={node.attributes?.connectionName || node.name} />
+          <InspectorRow label="Endpoint" value={connectionEndpoint(node.attributes)} />
+          <InspectorRow label="Namespaces" value={(node.attributes?.namespaceUris || []).join(', ')} />
+          <InspectorRow label="Configuration" value={capitalize(node.attributes?.configurationStatus || 'configured')} />
+        </>}
         <InspectorRow label="Status" value={<Chip
           size="small"
           icon={status === 'resolved' ? <CheckCircleOutlineRounded /> : <ErrorOutlineRounded />}
@@ -60,6 +73,14 @@ export default function NodeInspector({ node, status, upstreamCount, downstreamC
       </Stack>
     </>}
   </Paper>;
+}
+
+function connectionEndpoint(attributes = {}) {
+  return attributes.endpointUrl
+    || attributes.ENDPOINTURL
+    || attributes.endpoint
+    || attributes.discoveryUrl
+    || attributes.DISCOVERYURL;
 }
 
 function InspectorRow({ label, value }) {

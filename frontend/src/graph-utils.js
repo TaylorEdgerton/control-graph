@@ -211,7 +211,9 @@ function buildConnectionOverview(index) {
     nodeIds.add(edge.target);
   }
   for (const node of index.nodes.values()) {
-    if (['SOURCE_DEVICE', 'IGNITION_DEVICE'].includes(node.kind)) nodeIds.add(node.id);
+    if (['SOURCE_DEVICE', 'IGNITION_DEVICE', 'OPC_SERVER_CONNECTION'].includes(node.kind)) {
+      nodeIds.add(node.id);
+    }
   }
   return { nodeIds: [...nodeIds].slice(0, 300), edgeIds };
 }
@@ -251,6 +253,9 @@ export function buildFlowElements(index, graphView, selectedId, systemFilters, t
   const edges = controlEdges.map((edge) => {
     const unresolved = edge.status !== 'resolved';
     const identityMatch = ['communication_identity_match', 'device_connection_match'].includes(edge.kind);
+    const opcUaLink = edge.kind === 'provides'
+      && index.nodes.get(edge.source)?.kind === 'OPC_SERVER_CONNECTION'
+      && index.nodes.get(edge.target)?.kind === 'OPC_NODE';
     const color = unresolved
       ? darkTokens.semantic.warning
       : identityMatch ? darkTokens.semantic.success : darkTokens.graph.edge;
@@ -262,8 +267,12 @@ export function buildFlowElements(index, graphView, selectedId, systemFilters, t
       markerEnd: { type: MarkerType.ArrowClosed, color, width: 18, height: 18 },
       style: { stroke: color, strokeWidth: identityMatch ? 2.4 : 1.7, strokeDasharray: unresolved ? '6 4' : undefined },
       animated: identityMatch,
-      label: unresolved ? capitalize(edge.status) : undefined,
-      labelStyle: { fill: darkTokens.semantic.warning, fontSize: 11, fontWeight: 700 },
+      label: unresolved ? capitalize(edge.status) : opcUaLink ? 'OPC UA' : undefined,
+      labelStyle: {
+        fill: unresolved ? darkTokens.semantic.warning : darkTokens.text.subtle,
+        fontSize: 11,
+        fontWeight: 700,
+      },
       labelBgStyle: { fill: darkTokens.surface.overlay, fillOpacity: .96 },
       focusable: true,
     };
@@ -319,7 +328,7 @@ export function identityLabel(identity) {
   if (!identity || typeof identity !== 'object') return '—';
   const endpoint = identity.host || identity.server || identity.device;
   const point = [identity.object, identity.index].filter(Boolean).join(' ');
-  return [String(identity.kind || '').toUpperCase(), endpoint, identity.unit && `unit ${identity.unit}`, point || identity.nodeid]
+  return [String(identity.kind || '').toUpperCase(), endpoint, identity.unit && `unit ${identity.unit}`, point || identity.displayName || identity.nodeid]
     .filter(Boolean).join(' · ');
 }
 

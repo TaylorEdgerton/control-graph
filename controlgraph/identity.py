@@ -67,7 +67,15 @@ def parse_opc_item(item: str, server: str = "", device_hint: str = "") -> dict[s
         })
         identity["nodeid"] = body.strip()
         identity["identifierType"] = identifier_type.lower()
+        identity["identifierTypeName"] = {
+            "s": "String",
+            "i": "Numeric",
+            "g": "GUID",
+            "b": "ByteString",
+        }[identifier_type.lower()]
         identity["identifier"] = identifier.strip()
+        identity["iecPath"] = opc_ua_iec_path(identifier)
+        identity["displayName"] = opc_node_display_name(identifier)
         if namespace_kind:
             identity["namespaceIndex"] = namespace_index
         if uri_kind:
@@ -98,6 +106,21 @@ def parse_opc_item(item: str, server: str = "", device_hint: str = "") -> dict[s
         )
 
     return compact({"kind": "opc", "server": server, "device": device, "nodeid": body})
+
+
+def opc_ua_iec_path(identifier: str) -> str:
+    value = identifier.strip()
+    if value.casefold().startswith("|var|"):
+        value = value[5:]
+    return value.strip(".")
+
+
+def opc_node_display_name(identifier: str) -> str:
+    path = opc_ua_iec_path(identifier)
+    parts = [part for part in path.split(".") if part]
+    if len(parts) > 2 and [part.casefold() for part in parts[:2]] == ["logic", "application"]:
+        parts = parts[2:]
+    return ".".join(parts) or path or identifier
 
 
 def infer_identity(values: Mapping[str, Any], inherited: Mapping[str, Any] | None = None) -> dict[str, str]:

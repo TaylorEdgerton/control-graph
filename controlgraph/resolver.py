@@ -7,6 +7,10 @@ from .identity import canonical
 from .model import ControlGraph, ControlNode, Evidence, stable_id
 
 
+IGNITION_PROTOCOL_KINDS = {"OPC_ITEM", "OPC_NODE"}
+IGNITION_CONNECTION_KINDS = {"IGNITION_DEVICE", "OPC_SERVER_CONNECTION"}
+
+
 def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
     graph = ControlGraph()
     graph.merge(source)
@@ -14,7 +18,7 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
 
     ignition_sources: dict[str, list[str]] = defaultdict(list)
     for node in graph.nodes.values():
-        if node.kind != "OPC_ITEM":
+        if node.kind not in IGNITION_PROTOCOL_KINDS:
             continue
         key = canonical(_identity(node))
         if key:
@@ -35,8 +39,8 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
         if len(candidates) == 1:
             source_id = candidates[0]
             matched_sources.add(source_id)
-            device_id = _source_device(graph, source_id)
-            target = device_id or source_id
+            connection_id = _ignition_connection(graph, source_id)
+            target = connection_id or source_id
             evidence = [
                 *point.evidence,
                 *graph.nodes[source_id].evidence,
@@ -51,11 +55,11 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
                 evidence=evidence,
             )
             source_device_id = _point_device(graph, point.id)
-            if source_device_id and device_id:
+            if source_device_id and connection_id:
                 _add_device_connection_match(
                     graph,
                     source_device_id,
-                    device_id,
+                    connection_id,
                     point.id,
                     source_id,
                     key,
@@ -73,13 +77,16 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
         else:
             _add_issue(graph, point, "No Ignition source has this communication identity", "unresolved", key=key)
 
-    for source in [node for node in list(graph.nodes.values()) if node.kind == "OPC_ITEM"]:
+    for source in [
+        node for node in list(graph.nodes.values())
+        if node.kind in IGNITION_PROTOCOL_KINDS
+    ]:
         if source.id not in matched_sources:
             key = canonical(_identity(source))
             _add_issue(
                 graph,
                 source,
-                "No source protocol point has this communication identity" if key else "The OPC item has no complete communication identity",
+                "No source protocol point has this communication identity" if key else "The OPC source has no complete communication identity",
                 "unresolved",
                 key=key,
             )
@@ -91,9 +98,13 @@ def _identity(node: ControlNode) -> dict[str, Any]:
     return value if isinstance(value, dict) else {}
 
 
-def _source_device(graph: ControlGraph, source_id: str) -> str | None:
+def _ignition_connection(graph: ControlGraph, source_id: str) -> str | None:
     for edge in graph.edges.values():
-        if edge.target == source_id and edge.kind == "provides" and graph.nodes[edge.source].kind == "IGNITION_DEVICE":
+        if (
+            edge.target == source_id
+            and edge.kind == "provides"
+            and graph.nodes[edge.source].kind in IGNITION_CONNECTION_KINDS
+        ):
             return edge.source
     return None
 
@@ -112,14 +123,14 @@ def _point_device(graph: ControlGraph, point_id: str) -> str | None:
 def _add_device_connection_match(
     graph: ControlGraph,
     source_device_id: str,
-    ignition_device_id: str,
+    ignition_connection_id: str,
     point_id: str,
     source_id: str,
     identity_key: str,
     evidence: list[Evidence],
 ) -> None:
     edge_id = stable_id(
-        "edge", source_device_id, ignition_device_id, "device_connection_match", "resolved"
+        "edge", source_device_id, ignition_connection_id, "device_connection_match", "resolved"
     )
     attributes = {} if edge_id in graph.edges else {
         "matchedPoints": [],
@@ -128,7 +139,7 @@ def _add_device_connection_match(
     }
     edge = graph.add_edge(
         source_device_id,
-        ignition_device_id,
+        ignition_connection_id,
         "device_connection_match",
         status="resolved",
         attributes=attributes,
@@ -136,8 +147,8 @@ def _add_device_connection_match(
             *evidence,
             Evidence(
                 "resolver",
-                f"{source_device_id}->{ignition_device_id}",
-                "At least one protocol point maps through this configured Ignition device",
+                f"{source_device_id}->{ignition_connection_id}",
+                "At least one protocol point maps through this configured Ignition connection",
             ),
         ],
     )

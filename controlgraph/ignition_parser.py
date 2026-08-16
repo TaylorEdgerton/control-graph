@@ -501,7 +501,7 @@ def _read_sqlite_opc_connections(
                 continue
             node_id = stable_id("ignition_connection", display, table, name)
             graph.add_node(
-                ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, [evidence])
+                ControlNode(node_id, "OPC_SERVER_CONNECTION", name, "IGNITION", attrs, [evidence])
             )
             devices[name.casefold()] = (node_id, attrs)
 
@@ -603,8 +603,13 @@ def _find_devices(
             if identity:
                 attrs["identity"] = identity
             evidence = Evidence(display, location, _json_detail(obj))
-            node_id = stable_id("ignition_device", display, location, name)
-            graph.add_node(ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, [evidence]))
+            kind = (
+                "OPC_SERVER_CONNECTION"
+                if attrs.get("connectionKind") == "opc-client"
+                else "IGNITION_DEVICE"
+            )
+            node_id = stable_id(kind, display, location, name)
+            graph.add_node(ControlNode(node_id, kind, name, "IGNITION", attrs, [evidence]))
             devices[name.casefold()] = (node_id, attrs)
     return devices
 
@@ -970,7 +975,7 @@ def _add_source(
     if server:
         attrs["opcServer"] = server
     identity = infer_identity(attrs)
-    device_name, device_record, device_match = _match_configured_device(
+    connection_name, connection_record, connection_match = _match_configured_connection(
         identity,
         item_path,
         parameters or {},
@@ -978,10 +983,10 @@ def _add_source(
     )
     external_opc_node = identity.get("kind") == "opcua" and bool(identity.get("namespaceUri"))
     connection_configured = bool(
-        device_record and device_record[1].get("configurationStatus") != "inferred"
+        connection_record and connection_record[1].get("configurationStatus") != "inferred"
     )
-    if external_opc_node and not device_record:
-        device_name, device_record = _ensure_opc_server_root(
+    if external_opc_node and not connection_record:
+        connection_name, connection_record = _ensure_opc_server_root(
             graph,
             devices,
             server,
@@ -989,23 +994,39 @@ def _add_source(
             display,
             evidence,
         )
-        device_match = "OPC server reference" if server else "namespace URI"
-    elif external_opc_node and device_record:
-        _add_connection_namespace(graph, device_record, identity["namespaceUri"])
-    if device_record:
-        identity = enrich_with_device(identity, device_record[1])
+        connection_match = "OPC server reference" if server else "namespace URI"
+    elif external_opc_node and connection_record:
+        _add_connection_namespace(graph, connection_record, identity["namespaceUri"])
+    if connection_record:
+        identity = enrich_with_device(identity, connection_record[1])
+        connection_kind = graph.nodes[connection_record[0]].kind
         if connection_configured:
-            identity.setdefault("device", device_name.casefold())
-            attrs["configuredDevice"] = device_name
+            identity.setdefault("device", connection_name.casefold())
+            if connection_kind == "OPC_SERVER_CONNECTION":
+                attrs["configuredConnection"] = connection_name
+                attrs["connectionMatch"] = connection_match
+            else:
+                attrs["configuredDevice"] = connection_name
+                attrs["deviceMatch"] = connection_match
         else:
-            attrs["connectionDevice"] = device_name
+            attrs["inferredConnection"] = connection_name
             attrs["connectionConfigured"] = False
-        attrs["deviceMatch"] = device_match
+            attrs["connectionMatch"] = connection_match
+    if external_opc_node:
+        attrs.update({
+            "displayName": identity.get("displayName", item_path),
+            "iecPath": identity.get("iecPath", ""),
+            "namespaceUri": identity.get("namespaceUri", ""),
+            "identifierType": identity.get("identifierTypeName", identity.get("identifierType", "")),
+            "rawNodeId": identity.get("nodeid", item_path),
+        })
     attrs["identity"] = identity
-    source_id = stable_id("opc_item", display, location, item_path)
-    graph.add_node(ControlNode(source_id, "OPC_ITEM", item_path, "IGNITION", attrs, evidence))
-    if device_record:
-        graph.add_edge(device_record[0], source_id, "provides", evidence=evidence)
+    source_kind = "OPC_NODE" if external_opc_node else "OPC_ITEM"
+    source_name = str(identity.get("displayName") or item_path) if external_opc_node else item_path
+    source_id = stable_id(source_kind, display, location, item_path)
+    graph.add_node(ControlNode(source_id, source_kind, source_name, "IGNITION", attrs, evidence))
+    if connection_record:
+        graph.add_edge(connection_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
     if external_opc_node and not connection_configured:
         server_name = identity.get("server", "")
@@ -1014,7 +1035,8 @@ def _add_source(
             if server_name
             else "The external OPC UA item does not specify an OPC server connection"
         )
-        issue_id = stable_id("mapping_issue", source_id, message)
+        issue_subject_id = connection_record[0] if connection_record else source_id
+        issue_id = stable_id("mapping_issue", issue_subject_id, message)
         graph.add_node(ControlNode(
             issue_id,
             "MAPPING_ISSUE",
@@ -1022,14 +1044,20 @@ def _add_source(
             "IGNITION",
             {
                 "status": "unresolved",
-                "subject": source_id,
+                "subject": issue_subject_id,
                 "opcServer": server_name,
                 "namespaceUri": identity["namespaceUri"],
                 "nodeId": identity.get("nodeid", ""),
             },
             evidence,
         ))
-        graph.add_edge(source_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
+        graph.add_edge(
+            issue_subject_id,
+            issue_id,
+            "has_mapping_issue",
+            status="unresolved",
+            evidence=evidence,
+        )
 
 
 def _ensure_opc_server_root(
@@ -1054,7 +1082,9 @@ def _ensure_opc_server_root(
         "namespaceUris": [namespace_uri],
     }
     node_id = stable_id("ignition_opc_server", display, name)
-    graph.add_node(ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, evidence))
+    graph.add_node(
+        ControlNode(node_id, "OPC_SERVER_CONNECTION", name, "IGNITION", attrs, evidence)
+    )
     record = (node_id, attrs)
     devices[key] = record
     return name, record
@@ -1071,7 +1101,7 @@ def _add_connection_namespace(
     graph.nodes[record[0]].attributes["namespaceUris"] = namespaces
 
 
-def _match_configured_device(
+def _match_configured_connection(
     identity: dict[str, str],
     item_path: str,
     parameters: dict[str, Any],
@@ -1088,10 +1118,12 @@ def _match_configured_device(
         for name, value in parameters.items()
         if isinstance(value, (str, int, float)) and value != ""
     ]
-    parameter_items.sort(key=lambda item: (_device_parameter_priority(item[0]), item[0].casefold()))
+    parameter_items.sort(
+        key=lambda item: (_connection_parameter_priority(item[0]), item[0].casefold())
+    )
     if not external_opc_node:
         for name, value in parameter_items:
-            if _device_parameter_priority(name) < 9:
+            if _connection_parameter_priority(name) < 9:
                 candidates.append((f"parameter {name}", value))
         candidates.append(("resolved OPC item path", item_path))
 
@@ -1118,7 +1150,7 @@ def _match_configured_device(
     return "", None, ""
 
 
-def _device_parameter_priority(name: str) -> int:
+def _connection_parameter_priority(name: str) -> int:
     key = clean_key(name)
     if "connectionstring" in key or key.endswith(("path", "nodeid")):
         return 9

@@ -6,8 +6,10 @@ export const KIND_LABELS = {
   SOURCE_TAG: 'Source tag',
   IEC_VARIABLE: 'IEC variable',
   IEC_LOGIC: 'IEC logic',
-  IGNITION_DEVICE: 'Connection device',
+  IGNITION_DEVICE: 'Device connection',
+  OPC_SERVER_CONNECTION: 'OPC UA connection',
   OPC_ITEM: 'OPC item',
+  OPC_NODE: 'OPC variable',
   UDT_DEFINITION: 'UDT template',
   UDT_INSTANCE: 'UDT instance',
   UDT_MEMBER: 'UDT member',
@@ -29,7 +31,8 @@ export const SYSTEM_FILTERS = [
 
 export const TYPE_FILTERS = [
   { label: 'Device', kinds: ['SOURCE_DEVICE', 'IGNITION_DEVICE'] },
-  { label: 'Protocol point', kinds: ['PROTOCOL_POINT', 'OPC_ITEM'] },
+  { label: 'Connection', kinds: ['OPC_SERVER_CONNECTION'] },
+  { label: 'Protocol point', kinds: ['PROTOCOL_POINT', 'OPC_ITEM', 'OPC_NODE'] },
   { label: 'Tag', kinds: ['SOURCE_TAG', 'IGNITION_TAG'] },
   { label: 'Logic', kinds: ['IEC_VARIABLE', 'IEC_LOGIC'] },
   { label: 'UDT', kinds: ['UDT_DEFINITION', 'UDT_INSTANCE', 'UDT_MEMBER'] },

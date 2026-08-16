@@ -38,7 +38,10 @@ class BackupRecord:
             result.update(
                 {
                     "nodeCount": summary["nodeCount"],
-                    "deviceCount": summary["nodeKinds"].get("IGNITION_DEVICE", 0),
+                    "deviceCount": (
+                        summary["nodeKinds"].get("IGNITION_DEVICE", 0)
+                        + summary["nodeKinds"].get("OPC_SERVER_CONNECTION", 0)
+                    ),
                     "tagCount": summary["nodeKinds"].get("IGNITION_TAG", 0),
                 }
             )

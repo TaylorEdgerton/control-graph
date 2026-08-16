@@ -14,7 +14,7 @@ from controlgraph.ignition_parser import inspect_ignition_backup, parse_ignition
 from controlgraph.identity import parse_opc_item
 from controlgraph.cli import main
 from controlgraph.loader import build_graph
-from controlgraph.model import ControlNode, stable_id
+from controlgraph.model import ControlGraph, ControlNode, stable_id
 from controlgraph.resolver import resolve
 from controlgraph.server import create_app
 from controlgraph.source_parser import parse_source
@@ -103,7 +103,9 @@ class ControlGraphTests(unittest.TestCase):
             tags_81 = {node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_TAG"}
             tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
             connections_81 = {
-                node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_DEVICE"
+                node.name
+                for node in graph_81.nodes.values()
+                if node.kind == "OPC_SERVER_CONNECTION"
             }
             self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
             self.assertEqual(tags_83, {"[default]test"})
@@ -185,18 +187,24 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(identity["kind"], "opcua")
         self.assertEqual(identity["namespaceUri"], "CODESYSSPV3/3S/IecVarAccess")
         self.assertEqual(identity["identifier"], "|var|Logic.Application.LV_Meter_MODBUS")
+        self.assertEqual(identity["identifierTypeName"], "String")
+        self.assertEqual(identity["displayName"], "LV_Meter_MODBUS")
 
         with tempfile.TemporaryDirectory() as temp:
             backup = create_codesys_parameter_backup(Path(temp))
             graph = parse_ignition(backup, ["default"])
 
-        source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
+        source = next(node for node in graph.nodes.values() if node.kind == "OPC_NODE")
         connections = {
-            node.name: node for node in graph.nodes.values() if node.kind == "IGNITION_DEVICE"
+            node.name: node
+            for node in graph.nodes.values()
+            if node.kind in {"IGNITION_DEVICE", "OPC_SERVER_CONNECTION"}
         }
-        self.assertEqual(source.name, item_path)
-        self.assertEqual(source.attributes["configuredDevice"], "CODESYS Connection")
-        self.assertEqual(source.attributes["deviceMatch"], "OPC server")
+        self.assertEqual(source.name, "LV_Meter_MODBUS")
+        self.assertEqual(source.attributes["rawNodeId"], item_path)
+        self.assertEqual(source.attributes["iecPath"], "Logic.Application.LV_Meter_MODBUS")
+        self.assertEqual(source.attributes["configuredConnection"], "CODESYS Connection")
+        self.assertEqual(source.attributes["connectionMatch"], "OPC server")
         self.assertEqual(source.attributes["identity"]["namespaceUri"], "CODESYSSPV3/3S/IecVarAccess")
         self.assertTrue(any(
             edge.source == connections["CODESYS Connection"].id and edge.target == source.id
@@ -207,6 +215,33 @@ class ControlGraphTests(unittest.TestCase):
             for edge in graph.edges.values()
         ))
 
+        source_graph = ControlGraph()
+        controller_id = stable_id("source_device", "codesys-controller")
+        point_id = stable_id("protocol_point", "codesys-voltage")
+        source_graph.add_node(ControlNode(
+            controller_id,
+            "SOURCE_DEVICE",
+            "CODESYS Application",
+            "SOURCE",
+        ))
+        source_graph.add_node(ControlNode(
+            point_id,
+            "PROTOCOL_POINT",
+            "test_Meter_MODBUS.Voltage",
+            "SOURCE",
+            {"direction": "out", "identity": identity},
+        ))
+        source_graph.add_edge(controller_id, point_id, "contains")
+        resolved = resolve(source_graph, graph)
+        connection_match = next(
+            edge for edge in resolved.edges.values()
+            if edge.kind == "device_connection_match"
+        )
+        self.assertEqual(
+            resolved.nodes[connection_match.target].kind,
+            "OPC_SERVER_CONNECTION",
+        )
+
         with tempfile.TemporaryDirectory() as temp:
             missing_connection = create_codesys_parameter_backup(
                 Path(temp),
@@ -215,10 +250,10 @@ class ControlGraphTests(unittest.TestCase):
             unresolved_graph = parse_ignition(missing_connection, ["default"])
         inferred_connection = next(
             node for node in unresolved_graph.nodes.values()
-            if node.kind == "IGNITION_DEVICE" and node.name == "CODESYS Connection"
+            if node.kind == "OPC_SERVER_CONNECTION" and node.name == "CODESYS Connection"
         )
         unresolved_source = next(
-            node for node in unresolved_graph.nodes.values() if node.kind == "OPC_ITEM"
+            node for node in unresolved_graph.nodes.values() if node.kind == "OPC_NODE"
         )
         self.assertEqual(inferred_connection.attributes["configurationStatus"], "inferred")
         self.assertEqual(
@@ -243,10 +278,10 @@ class ControlGraphTests(unittest.TestCase):
             namespace_graph = parse_ignition(namespace_only, ["default"])
         namespace_root = next(
             node for node in namespace_graph.nodes.values()
-            if node.kind == "IGNITION_DEVICE" and node.name.startswith("OPC namespace:")
+            if node.kind == "OPC_SERVER_CONNECTION" and node.name.startswith("OPC namespace:")
         )
         namespace_source = next(
-            node for node in namespace_graph.nodes.values() if node.kind == "OPC_ITEM"
+            node for node in namespace_graph.nodes.values() if node.kind == "OPC_NODE"
         )
         self.assertTrue(any(
             edge.source == namespace_root.id and edge.target == namespace_source.id
@@ -258,7 +293,9 @@ class ControlGraphTests(unittest.TestCase):
             backup = create_unresolved_parameter_backup(Path(temp))
             graph = parse_ignition(backup, ["default"])
 
-        self.assertFalse(any(node.kind == "OPC_ITEM" for node in graph.nodes.values()))
+        self.assertFalse(any(
+            node.kind in {"OPC_ITEM", "OPC_NODE"} for node in graph.nodes.values()
+        ))
         issue = next(
             node for node in graph.nodes.values()
             if node.kind == "MAPPING_ISSUE" and "unresolved parameters" in node.name

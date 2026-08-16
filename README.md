@@ -54,3 +54,5 @@ make check
 The source parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields.
 
 The Ignition parser extracts a `.gwbk` archive and reads the relevant filesystem resources. It resolves UDT parameters and member overrides. The resolver supports DNP3, Modbus, and OPC item identities.
+
+Native Ignition driver devices are modeled as device connections. Third-party OPC UA clients are modeled separately as OPC UA server connections.
