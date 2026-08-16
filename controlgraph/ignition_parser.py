@@ -577,13 +577,13 @@ def _add_instance(
         graph, definition, def_provider, def_display, def_location, def_prefix
     )
     graph.add_edge(definition_id, instance_id, "instantiates", evidence=[evidence])
-    parameters = _parameters(definition)
-    parameters.update(_parameters(tag))
+    parameters = _effective_parameters(definition, tag)
+    instance_node = graph.nodes[instance_id]
+    instance_node.attributes["resolvedParameters"] = copy.deepcopy(parameters)
     overrides = {(_text(item, "name").casefold()): item for item in _children(tag)}
     for position, member in enumerate(_children(definition)):
         member_name = _text(member, "name") or f"Member {position + 1}"
         effective = _deep_merge(member, overrides.get(member_name.casefold(), {}))
-        effective = _substitute(effective, parameters)
         member_location = f"{location}/resolved/{member_name}"
         _add_resolved_member(
             graph,
@@ -594,6 +594,7 @@ def _add_instance(
             devices,
             instance_id,
             instance_path,
+            parameters,
             definition_evidence=Evidence(def_display, f"{def_location}/tags/{position}", _json_detail(member)),
             instance_evidence=evidence,
         )
@@ -608,20 +609,25 @@ def _add_resolved_member(
     devices: dict[str, tuple[str, dict[str, Any]]],
     parent_id: str,
     path_prefix: str,
+    parameters: dict[str, Any],
     *,
     definition_evidence: Evidence,
     instance_evidence: Evidence,
 ) -> None:
+    template_tag = tag
+    tag = _substitute(template_tag, parameters)
     name = _text(tag, "name") or "Unnamed member"
     tag_path = _join_tag_path(path_prefix, name)
     evidence = [definition_evidence, instance_evidence]
     member_id = stable_id("udt_member", display, location, tag_path)
+    member_attributes = _scalar_values(tag)
+    member_attributes["resolvedParameters"] = copy.deepcopy(parameters)
     graph.add_node(
-        ControlNode(member_id, "UDT_MEMBER", tag_path, "IGNITION", _scalar_values(tag), evidence)
+        ControlNode(member_id, "UDT_MEMBER", tag_path, "IGNITION", member_attributes, evidence)
     )
     graph.add_edge(parent_id, member_id, "contains_member", evidence=evidence)
 
-    children = _children(tag)
+    children = _children(template_tag)
     if children:
         for position, child in enumerate(children):
             child_name = _text(child, "name") or str(position)
@@ -634,6 +640,7 @@ def _add_resolved_member(
                 devices,
                 member_id,
                 tag_path,
+                parameters,
                 definition_evidence=definition_evidence,
                 instance_evidence=instance_evidence,
             )
@@ -641,9 +648,22 @@ def _add_resolved_member(
 
 
     tag_id = stable_id("ignition_tag", display, location, tag_path)
-    graph.add_node(ControlNode(tag_id, "IGNITION_TAG", tag_path, "IGNITION", _scalar_values(tag), evidence))
+    tag_attributes = _scalar_values(tag)
+    tag_attributes["resolvedParameters"] = copy.deepcopy(parameters)
+    graph.add_node(ControlNode(tag_id, "IGNITION_TAG", tag_path, "IGNITION", tag_attributes, evidence))
     graph.add_edge(member_id, tag_id, "materializes_as_tag", evidence=evidence)
-    _add_source(graph, tag, display, location, devices, tag_id, member_id, evidence)
+    _add_source(
+        graph,
+        tag,
+        display,
+        location,
+        devices,
+        tag_id,
+        member_id,
+        evidence,
+        template_tag=template_tag,
+        parameters=parameters,
+    )
 
 
 def _add_atomic_tree(
@@ -686,12 +706,22 @@ def _add_source(
     tag_id: str,
     target_id: str,
     evidence: list[Evidence],
+    *,
+    template_tag: dict[str, Any] | None = None,
+    parameters: dict[str, Any] | None = None,
 ) -> None:
+    template_path = _text(template_tag or tag, "opcItemPath", "itemPath", "sourcePath")
     item_path = _text(tag, "opcItemPath", "itemPath", "sourcePath")
+    if parameters:
+        item_path = str(_substitute(item_path, parameters))
     if not item_path:
         return
     attrs = _scalar_values(tag)
     attrs["opcItemPath"] = item_path
+    if template_path and template_path != item_path:
+        attrs["opcItemPathTemplate"] = template_path
+    if parameters:
+        attrs["resolvedParameters"] = copy.deepcopy(parameters)
     server = _text(tag, "opcServer", "opcServerName")
     if server:
         attrs["opcServer"] = server
@@ -777,12 +807,34 @@ def _parameters(tag: dict[str, Any]) -> dict[str, Any]:
         if clean_key(key) == "parameters" and isinstance(value, dict):
             result: dict[str, Any] = {}
             for name, item in value.items():
-                if isinstance(item, dict) and "value" in item:
-                    result[name] = item["value"]
-                else:
-                    result[name] = item
+                result[name] = _parameter_value(item)
             return result
     return {}
+
+
+def _parameter_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        for key, item in value.items():
+            if clean_key(key) in {"value", "binding"}:
+                return _parameter_value(item)
+    return copy.deepcopy(value)
+
+
+def _effective_parameters(definition: dict[str, Any], instance: dict[str, Any]) -> dict[str, Any]:
+    parameters = _parameters(definition)
+    for name, value in _parameters(instance).items():
+        existing = next((key for key in parameters if key.casefold() == name.casefold()), None)
+        if existing is not None:
+            parameters.pop(existing)
+        parameters[name] = value
+
+    resolved = copy.deepcopy(parameters)
+    for _ in range(max(1, len(resolved) * 2)):
+        next_values = {name: _substitute(value, resolved) for name, value in resolved.items()}
+        if next_values == resolved:
+            break
+        resolved = next_values
+    return resolved
 
 
 def _substitute(value: Any, parameters: dict[str, Any]) -> Any:

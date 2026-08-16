@@ -2,6 +2,7 @@ from __future__ import annotations
 
 from collections import deque
 import asyncio
+import json
 import sqlite3
 from pathlib import Path
 import tempfile
@@ -97,6 +98,26 @@ class ControlGraphTests(unittest.TestCase):
             tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
             self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
             self.assertEqual(tags_83, {"[default]test"})
+
+    def test_udt_instance_parameters_resolve_the_opc_item_path(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_parameterized_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
+        tag = next(node for node in graph.nodes.values() if node.kind == "IGNITION_TAG")
+        instance = next(node for node in graph.nodes.values() if node.kind == "UDT_INSTANCE")
+        self.assertEqual(source.name, "Ignition OPC UA Server.Line1.IED_7")
+        self.assertEqual(
+            source.attributes["opcItemPathTemplate"],
+            "{OPC_Connection_String}.{IED}",
+        )
+        self.assertEqual(
+            source.attributes["resolvedParameters"]["OPC_Connection_String"],
+            "Ignition OPC UA Server.Line1",
+        )
+        self.assertEqual(tag.name, "[default]Area/Motor_1/Status")
+        self.assertEqual(instance.attributes["resolvedParameters"]["IED"], "IED_7")
 
     def test_unresolved_mapping_is_explicit(self) -> None:
         graph = build_graph(SEL, IGNITION)
@@ -286,6 +307,56 @@ def create_gateway_backups(root: Path) -> tuple[Path, Path]:
         )
         archive.writestr("projects/test/project.json", "{}")
     return gateway_81, gateway_83
+
+
+def create_parameterized_backup(root: Path) -> Path:
+    definition = [{
+        "name": "ParameterizedDevice",
+        "tagType": "UdtType",
+        "parameters": {
+            "Gateway": {"dataType": "String", "value": "Default Gateway"},
+            "Channel": {"dataType": "String", "value": "Default Channel"},
+            "OPC_Connection_String": {
+                "dataType": "String",
+                "value": "{Gateway}.{Channel}",
+            },
+            "IED": {"dataType": "String", "value": "Default IED"},
+        },
+        "tags": [{
+            "name": "Status",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcItemPath": {
+                "bindType": "parameter",
+                "binding": "{OPC_Connection_String}.{IED}",
+            },
+        }],
+    }]
+    instance = [{
+        "name": "Motor_1",
+        "tagType": "UdtInstance",
+        "typeId": "ParameterizedDevice",
+        "parameters": {
+            "Gateway": {"value": "Ignition OPC UA Server"},
+            "Channel": {"value": "Line1"},
+            "IED": {"value": "IED_7"},
+        },
+    }]
+    backup = root / "parameterized.gwbk"
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json",
+            json.dumps(definition),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json",
+            json.dumps(instance),
+        )
+    return backup
 
 
 if __name__ == "__main__":

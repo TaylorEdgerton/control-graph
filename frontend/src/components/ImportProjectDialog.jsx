@@ -215,7 +215,6 @@ function BackupCard({
   selectedProviders = [],
   onProvidersChange,
 }) {
-  const projects = backup.projects || [];
   const importedProviders = backup.selectedTagProviders || [];
   return <Paper variant="outlined" sx={{ p: 1.5 }}>
     <Stack direction="row" spacing={1.5} alignItems="flex-start">

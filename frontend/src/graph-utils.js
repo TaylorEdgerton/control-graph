@@ -35,10 +35,65 @@ export function buildBrowserTree(nodes) {
           .map(([kind, items]) => ({
             id: `group:${system}:${kind}`,
             label: `${KIND_LABELS[kind] || kind} (${items.length})`,
-            children: items
-              .sort((left, right) => left.name.localeCompare(right.name))
-              .map((node) => ({ id: `node:${node.id}`, label: shortName(node.name) })),
+            children: kind === 'IGNITION_TAG'
+              ? buildIgnitionTagTree(items, system, kind)
+              : items
+                .sort((left, right) => left.name.localeCompare(right.name))
+                .map((node) => ({ id: `node:${node.id}`, label: shortName(node.name) })),
           })),
+      };
+    });
+}
+
+export function ignitionTagPathSegments(name) {
+  const value = String(name || '').trim();
+  const provider = value.match(/^(\[[^\]]+\])/u);
+  const remainder = provider ? value.slice(provider[1].length) : value;
+  return [
+    ...(provider ? [provider[1]] : []),
+    ...remainder.split('/').map((part) => part.trim()).filter(Boolean),
+  ];
+}
+
+function buildIgnitionTagTree(nodes, system, kind) {
+  const root = createTagBranch('');
+  for (const node of [...nodes].sort((left, right) => left.name.localeCompare(right.name))) {
+    const segments = ignitionTagPathSegments(node.name);
+    let branch = root;
+    for (const segment of segments.length ? segments : [node.name]) {
+      if (!branch.children.has(segment)) branch.children.set(segment, createTagBranch(segment));
+      branch = branch.children.get(segment);
+    }
+    branch.nodes.push(node);
+  }
+  return tagBranchItems(root, system, kind, []);
+}
+
+function createTagBranch(label) {
+  return { label, children: new Map(), nodes: [] };
+}
+
+function tagBranchItems(branch, system, kind, parentPath) {
+  return [...branch.children.values()]
+    .sort((left, right) => left.label.localeCompare(right.label))
+    .map((child) => {
+      const path = [...parentPath, child.label];
+      const descendants = tagBranchItems(child, system, kind, path);
+      if (child.nodes.length === 1) {
+        return {
+          id: `node:${child.nodes[0].id}`,
+          label: child.label,
+          ...(descendants.length ? { children: descendants } : {}),
+        };
+      }
+      const duplicateNodes = child.nodes.map((node) => ({
+        id: `node:${node.id}`,
+        label: `${child.label} · ${sourceName(node)}`,
+      }));
+      return {
+        id: `folder:${system}:${kind}:${path.map(encodeURIComponent).join('/')}`,
+        label: child.label,
+        children: [...descendants, ...duplicateNodes],
       };
     });
 }
