@@ -93,6 +93,7 @@ def parse_ignition(
 ) -> ControlGraph:
     source = Path(path)
     graph = ControlGraph()
+    graph.audit = _empty_audit_summary()
     with _backup_root(source) as root:
         configuration_format = _configuration_format_from_root(root)
         if configuration_format == "sqlite":
@@ -163,6 +164,7 @@ def parse_ignition(
             path_prefix=path_prefix,
             definition_resource=definition_resource,
         )
+    _prune_non_opc_tag_structure(graph)
     _finalize_connection_usage(graph)
     return graph
 
@@ -748,6 +750,9 @@ def _add_resolved_member(
         return
     tag_path = _join_tag_path(path_prefix, name)
     evidence = [definition_evidence, instance_evidence]
+    children = _children(tag)
+    if not nested_definition_record and not children and not _record_audit_tag(graph, tag):
+        return
     member_kind = "UDT_INSTANCE" if nested_definition_record else "UDT_MEMBER"
     member_id = stable_id(member_kind, display, location, tag_path)
     member_attributes = _scalar_values(tag)
@@ -809,7 +814,6 @@ def _add_resolved_member(
             )
         return
 
-    children = _children(template_tag)
     if children:
         for position, child in enumerate(children):
             child_name = _text(child, "name") or str(position)
@@ -866,24 +870,31 @@ def _add_atomic_tree(
     if not name:
         return
     tag_path = _join_tag_path(path_prefix or f"[{provider}]", name)
+    children = _children(tag)
+    if children:
+        for position, child in enumerate(children):
+            _add_tag_tree(
+                graph,
+                child,
+                provider,
+                display,
+                f"{location}/tags/{position}",
+                devices,
+                definitions,
+                parent_id=parent_id,
+                path_prefix=tag_path,
+            )
+        return
+    if _text(tag, "tagType", "type").casefold().replace(" ", "") == "folder":
+        return
+    if not _record_audit_tag(graph, tag):
+        return
     evidence = [Evidence(display, location, _json_detail(tag))]
     tag_id = stable_id("ignition_tag", display, location, tag_path)
     graph.add_node(ControlNode(tag_id, "IGNITION_TAG", tag_path, "IGNITION", _scalar_values(tag), evidence))
     if parent_id:
         graph.add_edge(parent_id, tag_id, "contains", evidence=evidence)
     _add_source(graph, tag, display, location, devices, tag_id, tag_id, evidence)
-    for position, child in enumerate(_children(tag)):
-        _add_tag_tree(
-            graph,
-            child,
-            provider,
-            display,
-            f"{location}/tags/{position}",
-            devices,
-            definitions,
-            parent_id=tag_id,
-            path_prefix=tag_path,
-        )
 
 
 def _add_tag_tree(
@@ -949,6 +960,17 @@ def _add_source(
     if parameters:
         item_path = str(_substitute(item_path, parameters))
     if not item_path:
+        message = "The OPC tag does not define an OPC item path"
+        issue_id = stable_id("mapping_issue", target_id, message)
+        graph.add_node(ControlNode(
+            issue_id,
+            "MAPPING_ISSUE",
+            message,
+            "IGNITION",
+            {"status": "invalid", "subject": target_id, "opcServer": _text(tag, "opcServer", "opcServerName")},
+            evidence,
+        ))
+        graph.add_edge(target_id, issue_id, "has_mapping_issue", status="invalid", evidence=evidence)
         return
     attrs = _scalar_values(tag)
     attrs["opcItemPath"] = item_path
@@ -1052,12 +1074,13 @@ def _add_source(
     if connection_record:
         graph.add_edge(connection_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
-    if external_opc_node and not connection_configured:
+    if not connection_configured:
+        graph.audit["missingConnectionCount"] = int(graph.audit.get("missingConnectionCount", 0)) + 1
         server_name = identity.get("server", "")
         message = (
             f"The configured OPC server connection is not available: {server_name}"
             if server_name
-            else "The external OPC UA item does not specify an OPC server connection"
+            else "The OPC tag does not specify a configured OPC server connection"
         )
         issue_subject_id = connection_record[0] if connection_record else source_id
         issue_id = stable_id("mapping_issue", issue_subject_id, message)
@@ -1111,6 +1134,80 @@ def _finalize_connection_usage(graph: ControlGraph) -> None:
         if signal.kind not in signal_kinds:
             continue
         signal.attributes["referencedTagCount"] = len(tags_by_signal[signal.id])
+
+
+def _empty_audit_summary() -> dict[str, Any]:
+    return {
+        "scope": "OPC_TAGS_ONLY",
+        "totalTagCount": 0,
+        "opcTagCount": 0,
+        "excludedTagCount": 0,
+        "excludedByValueSource": {},
+        "invalidOpcPathCount": 0,
+        "unresolvedParameterCount": 0,
+        "missingConnectionCount": 0,
+    }
+
+
+def _record_audit_tag(graph: ControlGraph, tag: dict[str, Any]) -> bool:
+    graph.audit["totalTagCount"] = int(graph.audit.get("totalTagCount", 0)) + 1
+    value_source = _text(tag, "valueSource").strip().casefold() or "unspecified"
+    if value_source != "opc":
+        graph.audit["excludedTagCount"] = int(graph.audit.get("excludedTagCount", 0)) + 1
+        excluded = graph.audit.setdefault("excludedByValueSource", {})
+        excluded[value_source] = int(excluded.get(value_source, 0)) + 1
+        return False
+    graph.audit["opcTagCount"] = int(graph.audit.get("opcTagCount", 0)) + 1
+    item_path = _text(tag, "opcItemPath", "itemPath", "sourcePath")
+    unresolved = set(re.findall(r"\{([^{}]+)}", item_path))
+    if not item_path or unresolved:
+        graph.audit["invalidOpcPathCount"] = int(graph.audit.get("invalidOpcPathCount", 0)) + 1
+    if unresolved:
+        graph.audit["unresolvedParameterCount"] = int(
+            graph.audit.get("unresolvedParameterCount", 0)
+        ) + 1
+    return True
+
+
+def _prune_non_opc_tag_structure(graph: ControlGraph) -> None:
+    structural_kinds = {"UDT_DEFINITION", "UDT_INSTANCE", "UDT_MEMBER", "IGNITION_TAG"}
+    kept = {
+        edge.target
+        for edge in graph.edges.values()
+        if edge.kind == "drives" and graph.nodes[edge.source].kind in {"OPC_ITEM", "OPC_NODE"}
+    }
+    kept.update(
+        edge.source
+        for edge in graph.edges.values()
+        if edge.kind == "has_mapping_issue" and edge.source in graph.nodes
+    )
+    changed = True
+    while changed:
+        changed = False
+        for edge in graph.edges.values():
+            candidate = ""
+            if edge.target in kept and edge.kind in {"contains", "contains_member", "instantiates"}:
+                candidate = edge.source
+            elif edge.source in kept and edge.kind == "materializes_as_tag":
+                candidate = edge.target
+            if candidate and candidate not in kept:
+                kept.add(candidate)
+                changed = True
+    for node_id, node in list(graph.nodes.items()):
+        if node.kind in structural_kinds and node_id not in kept:
+            _remove_node(graph, node_id)
+    for node_id, node in list(graph.nodes.items()):
+        if node.kind == "MAPPING_ISSUE" and node.system == "IGNITION" and not any(
+            edge.source == node_id or edge.target == node_id for edge in graph.edges.values()
+        ):
+            _remove_node(graph, node_id)
+
+
+def _remove_node(graph: ControlGraph, node_id: str) -> None:
+    graph.nodes.pop(node_id, None)
+    for edge_id, edge in list(graph.edges.items()):
+        if edge.source == node_id or edge.target == node_id:
+            graph.edges.pop(edge_id, None)
 
 
 def _ensure_opc_server_root(

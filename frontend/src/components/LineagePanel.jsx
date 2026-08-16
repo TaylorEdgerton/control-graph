@@ -58,16 +58,21 @@ export default function LineagePanel({
 }
 
 function GraphHeader({ model }) {
-  const resolved = model.edges.filter((edge) => edge.status === 'resolved').length;
-  const unresolved = model.edges.length - resolved;
-  const resolvedRate = model.edges.length ? Math.round((resolved / model.edges.length) * 100) : 0;
+  const audit = model.summary.audit || {};
+  const totalTags = audit.totalTagCount ?? model.summary.nodeKinds?.IGNITION_TAG ?? 0;
+  const opcTags = audit.opcTagCount ?? model.summary.nodeKinds?.IGNITION_TAG ?? 0;
+  const resolved = audit.resolvedTagCount ?? 0;
+  const unresolved = audit.unresolvedTagCount ?? opcTags;
   return <Box sx={{ px: 2.5, pt: 1.75 }}>
-    <Typography variant="h6" fontSize={18}>Signal Lineage Graph</Typography>
+    <Stack direction="row" spacing={1} alignItems="center">
+      <Typography variant="h6" fontSize={18}>External Interface Audit</Typography>
+      <Chip size="small" label="OPC tags only" color="primary" variant="outlined" />
+    </Stack>
     <Paper variant="outlined" sx={{ display: 'flex', mt: 1.25, overflow: 'hidden', width: 'fit-content' }}>
-      <Metric icon={<DeviceHubOutlined />} label="Nodes" value={model.summary.nodeCount} tone="primary.light" />
-      <Metric icon={<HubOutlined />} label="Edges" value={model.summary.edgeCount} tone="secondary.light" />
-      <Metric icon={<CheckCircleOutlineRounded />} label="Resolved" value={`${resolvedRate}%`} tone="success.main" />
-      <Metric icon={<ErrorOutlineRounded />} label="Unresolved" value={unresolved} tone="warning.main" />
+      <Metric icon={<DeviceHubOutlined />} label="Total tags" value={totalTags.toLocaleString()} tone="text.secondary" />
+      <Metric icon={<HubOutlined />} label="OPC audited" value={opcTags.toLocaleString()} tone="primary.light" />
+      <Metric icon={<CheckCircleOutlineRounded />} label="Resolved" value={resolved.toLocaleString()} tone="success.main" />
+      <Metric icon={<ErrorOutlineRounded />} label="Audit issues" value={unresolved.toLocaleString()} tone="warning.main" />
     </Paper>
   </Box>;
 }

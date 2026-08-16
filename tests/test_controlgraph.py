@@ -107,9 +107,50 @@ class ControlGraphTests(unittest.TestCase):
                 for node in graph_81.nodes.values()
                 if node.kind == "OPC_SERVER_CONNECTION"
             }
-            self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
-            self.assertEqual(tags_83, {"[default]test"})
+            self.assertEqual(tags_81, set())
+            self.assertEqual(tags_83, set())
+            self.assertEqual(graph_81.summary()["audit"]["totalTagCount"], 2)
+            self.assertEqual(graph_81.summary()["audit"]["excludedTagCount"], 2)
+            self.assertEqual(graph_83.summary()["audit"]["totalTagCount"], 1)
+            self.assertEqual(graph_83.summary()["audit"]["excludedTagCount"], 1)
             self.assertIn("CODESYS Connection", connections_81)
+
+    def test_opc_only_audit_excludes_non_opc_tags_and_udt_members(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_opc_scope_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        summary = graph.summary()["audit"]
+        tag_names = {
+            node.name for node in graph.nodes.values() if node.kind == "IGNITION_TAG"
+        }
+        member_names = {
+            node.name for node in graph.nodes.values() if node.kind == "UDT_MEMBER"
+        }
+        self.assertEqual(summary["scope"], "OPC_TAGS_ONLY")
+        self.assertEqual(summary["totalTagCount"], 14)
+        self.assertEqual(summary["opcTagCount"], 4)
+        self.assertEqual(summary["excludedTagCount"], 10)
+        self.assertEqual(summary["excludedByValueSource"], {
+            "derived": 2,
+            "expression": 2,
+            "memory": 2,
+            "query": 2,
+            "reference": 2,
+        })
+        self.assertEqual(summary["invalidOpcPathCount"], 1)
+        self.assertEqual(summary["missingConnectionCount"], 1)
+        self.assertEqual(len(tag_names), 4)
+        self.assertEqual(member_names, {"[default]Area/Meter01/Voltage"})
+        self.assertFalse(any(
+            excluded in name
+            for name in tag_names | member_names
+            for excluded in ("Power", "DisplayName", "VoltageRef", "QueryValue", "DerivedValue")
+        ))
+        self.assertTrue(any(
+            node.kind == "MAPPING_ISSUE" and "does not define an OPC item path" in node.name
+            for node in graph.nodes.values()
+        ))
 
     def test_udt_instance_parameters_resolve_the_opc_item_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -511,7 +552,10 @@ class ControlGraphTests(unittest.TestCase):
                 imported = confirmed.json()["imports"][0]
                 self.assertEqual(imported["selectedTagProviders"], ["default"])
                 imported_names = {node["name"] for node in imported_graph.json()["nodes"]}
-                self.assertIn("[default]ApiTag", imported_names)
+                self.assertNotIn("[default]ApiTag", imported_names)
+                self.assertEqual(imported["totalTagCount"], 1)
+                self.assertEqual(imported["opcTagCount"], 0)
+                self.assertEqual(imported["excludedTagCount"], 1)
                 self.assertEqual(removed.status_code, 200)
                 restored_names = {node["name"] for node in removed.json()["graph"]["nodes"]}
                 self.assertIn("[default]Pump_01/Run", restored_names)
@@ -943,6 +987,89 @@ def create_numeric_namespace_backup(root: Path) -> Path:
                 "valueSource": "opc",
                 "opcItemPath": "ns=2;s=|var|Logic.Application.Program.Struct.Voltage",
             }]),
+        )
+    return backup
+
+
+def create_opc_scope_backup(root: Path) -> Path:
+    definition = {
+        "name": "AuditMeter",
+        "parameters": {
+            "BasePath": "nsu=CODESYSSPV3/3S/IecVarAccess;s=|var|Logic.Application.Meter01",
+        },
+        "tags": [
+            {
+                "name": "Voltage",
+                "tagType": "AtomicTag",
+                "valueSource": "opc",
+                "opcServer": "CODESYS Connection",
+                "opcItemPath": "{BasePath}.Voltage",
+            },
+            {"name": "Power", "tagType": "AtomicTag", "valueSource": "expression"},
+            {"name": "DisplayName", "tagType": "AtomicTag", "valueSource": "memory"},
+            {"name": "VoltageRef", "tagType": "AtomicTag", "valueSource": "reference"},
+            {"name": "QueryValue", "tagType": "AtomicTag", "valueSource": "query"},
+            {"name": "DerivedValue", "tagType": "AtomicTag", "valueSource": "derived"},
+        ],
+    }
+    direct_tags = [
+        {
+            "name": "DirectOpc",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcServer": "CODESYS Connection",
+            "opcItemPath": (
+                "nsu=CODESYSSPV3/3S/IecVarAccess;"
+                "s=|var|Logic.Application.Meter01.Current"
+            ),
+        },
+        {"name": "DirectExpression", "tagType": "AtomicTag", "valueSource": "expression"},
+        {"name": "DirectMemory", "tagType": "AtomicTag", "valueSource": "memory"},
+        {"name": "DirectReference", "tagType": "AtomicTag", "valueSource": "reference"},
+        {"name": "DirectQuery", "tagType": "AtomicTag", "valueSource": "query"},
+        {"name": "DirectDerived", "tagType": "AtomicTag", "valueSource": "derived"},
+        {"name": "InvalidOpc", "tagType": "AtomicTag", "valueSource": "opc"},
+        {
+            "name": "MissingConnection",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcServer": "Missing OPC Connection",
+            "opcItemPath": (
+                "nsu=CODESYSSPV3/3S/IecVarAccess;"
+                "s=|var|Logic.Application.Meter01.Frequency"
+            ),
+        },
+    ]
+    backup = root / "opc-scope.gwbk"
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json",
+            json.dumps([definition]),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json",
+            json.dumps([{
+                "name": "Meter01",
+                "tagType": "UdtInstance",
+                "typeId": "AuditMeter",
+            }]),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/tags.json",
+            json.dumps(direct_tags),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/client-connection/"
+            "CODESYS Connection/config.json",
+            json.dumps({
+                "name": "CODESYS Connection",
+                "type": "OPC UA",
+                "endpointUrl": "opc.tcp://codesys-controller:4840",
+            }),
         )
     return backup
 

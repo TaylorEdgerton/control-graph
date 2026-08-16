@@ -234,8 +234,14 @@ function BackupCard({
         </Typography>
         <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
           {backup.backupType || 'Gateway'} backup{backup.timestamp ? ` · ${backup.timestamp}` : ''}
-          {imported ? ` · ${backup.nodeCount.toLocaleString()} nodes · ${backup.deviceCount.toLocaleString()} devices · ${backup.tagCount.toLocaleString()} tags` : ''}
+          {imported ? ` · ${backup.nodeCount.toLocaleString()} nodes · ${backup.deviceCount.toLocaleString()} devices` : ''}
         </Typography>
+        {imported && <Typography variant="caption" color="text.secondary" sx={{ display: 'block' }}>
+          {(backup.opcTagCount || 0).toLocaleString()} OPC tags audited · {(backup.excludedTagCount || 0).toLocaleString()} non-OPC tags excluded
+          {(backup.invalidOpcPathCount || backup.missingConnectionCount)
+            ? ` · ${(backup.invalidOpcPathCount || 0).toLocaleString()} invalid paths · ${(backup.missingConnectionCount || 0).toLocaleString()} missing connections`
+            : ''}
+        </Typography>}
         {imported && <Typography variant="caption" color="text.secondary" sx={{ display: 'block', mt: .5 }}>
           Tag providers: {importedProviders.join(', ') || 'None'}
         </Typography>}

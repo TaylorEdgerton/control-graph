@@ -35,6 +35,7 @@ class BackupRecord:
         }
         if self.graph is not None:
             summary = self.graph.summary()
+            audit = summary.get("audit", {})
             result.update(
                 {
                     "nodeCount": summary["nodeCount"],
@@ -43,6 +44,11 @@ class BackupRecord:
                         + summary["nodeKinds"].get("OPC_SERVER_CONNECTION", 0)
                     ),
                     "tagCount": summary["nodeKinds"].get("IGNITION_TAG", 0),
+                    "totalTagCount": audit.get("totalTagCount", 0),
+                    "opcTagCount": audit.get("opcTagCount", 0),
+                    "excludedTagCount": audit.get("excludedTagCount", 0),
+                    "invalidOpcPathCount": audit.get("invalidOpcPathCount", 0),
+                    "missingConnectionCount": audit.get("missingConnectionCount", 0),
                 }
             )
         return result

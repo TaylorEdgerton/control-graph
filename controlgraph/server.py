@@ -48,6 +48,7 @@ class SummaryResponse(BaseModel):
     edgeCount: int
     nodeKinds: dict[str, int]
     edgeStatuses: dict[str, int]
+    audit: dict[str, Any] = Field(default_factory=dict)
 
 
 class GraphResponse(BaseModel):
@@ -75,6 +76,11 @@ class BackupFileResponse(BaseModel):
     nodeCount: int | None = None
     deviceCount: int | None = None
     tagCount: int | None = None
+    totalTagCount: int | None = None
+    opcTagCount: int | None = None
+    excludedTagCount: int | None = None
+    invalidOpcPathCount: int | None = None
+    missingConnectionCount: int | None = None
 
 
 class WorkspaceResponse(BaseModel):
