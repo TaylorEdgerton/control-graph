@@ -213,9 +213,44 @@ class ControlGraphTests(unittest.TestCase):
                 include_connection=False,
             )
             unresolved_graph = parse_ignition(missing_connection, ["default"])
+        inferred_connection = next(
+            node for node in unresolved_graph.nodes.values()
+            if node.kind == "IGNITION_DEVICE" and node.name == "CODESYS Connection"
+        )
+        unresolved_source = next(
+            node for node in unresolved_graph.nodes.values() if node.kind == "OPC_ITEM"
+        )
+        self.assertEqual(inferred_connection.attributes["configurationStatus"], "inferred")
+        self.assertEqual(
+            inferred_connection.attributes["namespaceUris"],
+            ["CODESYSSPV3/3S/IecVarAccess"],
+        )
+        self.assertTrue(any(
+            edge.source == inferred_connection.id and edge.target == unresolved_source.id
+            for edge in unresolved_graph.edges.values()
+        ))
         self.assertTrue(any(
             node.kind == "MAPPING_ISSUE" and "OPC server connection" in node.name
             for node in unresolved_graph.nodes.values()
+        ))
+
+        with tempfile.TemporaryDirectory() as temp:
+            namespace_only = create_codesys_parameter_backup(
+                Path(temp),
+                include_connection=False,
+                include_server_property=False,
+            )
+            namespace_graph = parse_ignition(namespace_only, ["default"])
+        namespace_root = next(
+            node for node in namespace_graph.nodes.values()
+            if node.kind == "IGNITION_DEVICE" and node.name.startswith("OPC namespace:")
+        )
+        namespace_source = next(
+            node for node in namespace_graph.nodes.values() if node.kind == "OPC_ITEM"
+        )
+        self.assertTrue(any(
+            edge.source == namespace_root.id and edge.target == namespace_source.id
+            for edge in namespace_graph.edges.values()
         ))
 
     def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
@@ -633,7 +668,12 @@ def create_child_udt_backup(root: Path) -> Path:
     return backup
 
 
-def create_codesys_parameter_backup(root: Path, *, include_connection: bool = True) -> Path:
+def create_codesys_parameter_backup(
+    root: Path,
+    *,
+    include_connection: bool = True,
+    include_server_property: bool = True,
+) -> Path:
     definition = [{
         "name": "CodesysPoint",
         "parameters": {
@@ -644,10 +684,11 @@ def create_codesys_parameter_backup(root: Path, *, include_connection: bool = Tr
             "name": "Value",
             "tagType": "AtomicTag",
             "valueSource": "opc",
-            "opcServer": "CODESYS Connection",
             "opcItemPath": "{OPC Connection String}{RTAC Device}",
         }],
     }]
+    if include_server_property:
+        definition[0]["tags"][0]["opcServer"] = "CODESYS Connection"
     instance = [{
         "name": "Meter_1",
         "tagType": "UdtInstance",

@@ -976,10 +976,30 @@ def _add_source(
         parameters or {},
         devices,
     )
+    external_opc_node = identity.get("kind") == "opcua" and bool(identity.get("namespaceUri"))
+    connection_configured = bool(
+        device_record and device_record[1].get("configurationStatus") != "inferred"
+    )
+    if external_opc_node and not device_record:
+        device_name, device_record = _ensure_opc_server_root(
+            graph,
+            devices,
+            server,
+            identity["namespaceUri"],
+            display,
+            evidence,
+        )
+        device_match = "OPC server reference" if server else "namespace URI"
+    elif external_opc_node and device_record:
+        _add_connection_namespace(graph, device_record, identity["namespaceUri"])
     if device_record:
         identity = enrich_with_device(identity, device_record[1])
-        identity.setdefault("device", device_name.casefold())
-        attrs["configuredDevice"] = device_name
+        if connection_configured:
+            identity.setdefault("device", device_name.casefold())
+            attrs["configuredDevice"] = device_name
+        else:
+            attrs["connectionDevice"] = device_name
+            attrs["connectionConfigured"] = False
         attrs["deviceMatch"] = device_match
     attrs["identity"] = identity
     source_id = stable_id("opc_item", display, location, item_path)
@@ -987,7 +1007,7 @@ def _add_source(
     if device_record:
         graph.add_edge(device_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
-    if identity.get("kind") == "opcua" and identity.get("namespaceUri") and not device_record:
+    if external_opc_node and not connection_configured:
         server_name = identity.get("server", "")
         message = (
             f"The configured OPC server connection is not available: {server_name}"
@@ -1010,6 +1030,45 @@ def _add_source(
             evidence,
         ))
         graph.add_edge(source_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
+
+
+def _ensure_opc_server_root(
+    graph: ControlGraph,
+    devices: dict[str, tuple[str, dict[str, Any]]],
+    server: str,
+    namespace_uri: str,
+    display: str,
+    evidence: list[Evidence],
+) -> tuple[str, tuple[str, dict[str, Any]]]:
+    name = server or f"OPC namespace: {namespace_uri}"
+    key = name.casefold()
+    existing = devices.get(key)
+    if existing:
+        _add_connection_namespace(graph, existing, namespace_uri)
+        return name, existing
+    attrs: dict[str, Any] = {
+        "name": name,
+        "connectionName": server,
+        "connectionKind": "opc-server-reference" if server else "opc-namespace",
+        "configurationStatus": "inferred",
+        "namespaceUris": [namespace_uri],
+    }
+    node_id = stable_id("ignition_opc_server", display, name)
+    graph.add_node(ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, evidence))
+    record = (node_id, attrs)
+    devices[key] = record
+    return name, record
+
+
+def _add_connection_namespace(
+    graph: ControlGraph,
+    record: tuple[str, dict[str, Any]],
+    namespace_uri: str,
+) -> None:
+    namespaces = record[1].setdefault("namespaceUris", [])
+    if namespace_uri not in namespaces:
+        namespaces.append(namespace_uri)
+    graph.nodes[record[0]].attributes["namespaceUris"] = namespaces
 
 
 def _match_configured_device(
