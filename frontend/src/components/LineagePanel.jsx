@@ -100,7 +100,9 @@ function FlowScene({
 
   if (!flow.nodes.length) {
     return <Box sx={{ height: '100%', display: 'grid', placeItems: 'center', p: 3 }}>
-      <Alert severity="info" variant="outlined">No {traceMode} path matches the active filters.</Alert>
+      <Alert severity="info" variant="outlined">
+        {selectedId ? `No ${traceMode} path matches the active filters.` : 'Import data or select a connection device to inspect its lineage.'}
+      </Alert>
     </Box>;
   }
 
@@ -129,7 +131,9 @@ function FlowScene({
     <Panel position="top-left">
       <Chip
         size="small"
-        label={traceMode === 'lineage' ? 'Complete lineage' : `${capitalize(traceMode)} trace`}
+        label={!selectedId
+          ? 'Connection overview'
+          : traceMode === 'lineage' ? 'Complete lineage' : `${capitalize(traceMode)} trace`}
         sx={{ bgcolor: 'controlGraph.surface.overlay', border: '1px solid', borderColor: 'divider' }}
       />
     </Panel>
@@ -186,7 +190,15 @@ function ControlFlowNode({ data, selected }) {
     <Typography variant="caption" sx={{ color: selected ? 'primary.light' : 'text.secondary', fontWeight: 700, letterSpacing: '.035em', textTransform: 'uppercase', lineHeight: 1.1 }}>
       {KIND_LABELS[node.kind] || node.kind}
     </Typography>
-    <Typography variant="body2" fontWeight={700} noWrap title={node.name} sx={{ mt: .55 }}>{shortName(node.name)}</Typography>
+    <Tooltip
+      title={node.name}
+      placement="top"
+      arrow
+      enterDelay={300}
+      slotProps={{ tooltip: { sx: { maxWidth: 560, overflowWrap: 'anywhere', fontSize: 12 } } }}
+    >
+      <Typography variant="body2" fontWeight={700} noWrap sx={{ mt: .55 }}>{shortName(node.name)}</Typography>
+    </Tooltip>
     <Typography variant="caption" color="text.secondary" lineHeight={1.1}>{node.system}</Typography>
     <Handle type="source" position={Position.Right} style={{ width: 7, height: 7, background: handleColor, borderColor: darkTokens.surface.sunken }} />
   </Paper>;

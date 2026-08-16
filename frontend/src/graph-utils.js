@@ -162,7 +162,7 @@ export function findLineage(index, selectedId) {
 }
 
 export function buildGraphView(index, start, mode, lineage) {
-  if (!start || !index.nodes.has(start)) return { nodeIds: [], edgeIds: [] };
+  if (!start || !index.nodes.has(start)) return buildConnectionOverview(index);
   if (mode === 'lineage') {
     const nodeIds = new Set(lineage?.nodeIds || [start]);
     const edgeIds = new Set(lineage?.edgeIds || []);
@@ -198,6 +198,22 @@ export function buildGraphView(index, start, mode, lineage) {
     }
   }
   return { nodeIds: [...nodeIds], edgeIds: [...edgeIds] };
+}
+
+function buildConnectionOverview(index) {
+  const edgeIds = [...index.edges.values()]
+    .filter((edge) => edge.kind === 'device_connection_match' && edge.status === 'resolved')
+    .map((edge) => edge.id);
+  const nodeIds = new Set();
+  for (const edgeId of edgeIds) {
+    const edge = index.edges.get(edgeId);
+    nodeIds.add(edge.source);
+    nodeIds.add(edge.target);
+  }
+  for (const node of index.nodes.values()) {
+    if (['SEL_DEVICE', 'IGNITION_DEVICE'].includes(node.kind)) nodeIds.add(node.id);
+  }
+  return { nodeIds: [...nodeIds].slice(0, 300), edgeIds };
 }
 
 export function buildFlowElements(index, graphView, selectedId, systemFilters, typeFilters) {

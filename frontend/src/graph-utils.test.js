@@ -1,7 +1,12 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-import { buildBrowserTree, ignitionTagPathSegments } from './graph-utils.js';
+import {
+  buildBrowserTree,
+  buildGraphView,
+  buildIndex,
+  ignitionTagPathSegments,
+} from './graph-utils.js';
 
 test('Ignition tag paths become nested browser branches', () => {
   const tree = buildBrowserTree([
@@ -28,6 +33,28 @@ test('Ignition provider and folder segments are parsed separately', () => {
     ignitionTagPathSegments('[provider]Folder/Subfolder/Tag'),
     ['[provider]', 'Folder', 'Subfolder', 'Tag'],
   );
+});
+
+test('no canvas selection shows the root connection overview', () => {
+  const model = {
+    nodes: [
+      { id: 'source', name: 'RTAC Link', kind: 'SEL_DEVICE', system: 'SEL', attributes: {} },
+      { id: 'target', name: 'DNP Connection', kind: 'IGNITION_DEVICE', system: 'IGNITION', attributes: {} },
+    ],
+    edges: [{
+      id: 'match',
+      source: 'source',
+      target: 'target',
+      kind: 'device_connection_match',
+      status: 'resolved',
+      attributes: {},
+    }],
+  };
+
+  assert.deepEqual(buildGraphView(buildIndex(model), null, 'lineage', null), {
+    nodeIds: ['source', 'target'],
+    edgeIds: ['match'],
+  });
 });
 
 function ignitionTag(id, name) {

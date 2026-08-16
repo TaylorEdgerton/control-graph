@@ -112,6 +112,7 @@ class ControlGraphTests(unittest.TestCase):
         source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
         tag = next(node for node in graph.nodes.values() if node.kind == "IGNITION_TAG")
         instance = next(node for node in graph.nodes.values() if node.kind == "UDT_INSTANCE")
+        template = next(node for node in graph.nodes.values() if node.kind == "UDT_DEFINITION")
         device = next(node for node in graph.nodes.values() if node.kind == "IGNITION_DEVICE")
         self.assertEqual(source.name, "RTAC_A.Binary Input 12")
         self.assertEqual(
@@ -127,6 +128,10 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(source.attributes["identity"]["host"], "10.20.1.20")
         self.assertEqual(source.attributes["identity"]["unit"], "1")
         self.assertEqual(tag.name, "[default]Area/Motor_1/Status")
+        self.assertNotIn("_types_", tag.name)
+        self.assertTrue(template.name.startswith("[default]_types_"))
+        self.assertTrue(template.attributes["isTemplate"])
+        self.assertFalse(any("Unnamed" in node.name for node in graph.nodes.values()))
         self.assertEqual(instance.attributes["resolvedParameters"]["Control_Tag"], "Binary Input 12")
         self.assertTrue(any(edge.source == device.id and edge.target == source.id for edge in graph.edges.values()))
 
@@ -341,7 +346,6 @@ def create_gateway_backups(root: Path) -> tuple[Path, Path]:
 def create_parameterized_backup(root: Path) -> Path:
     definition = [{
         "name": "ParameterizedDevice",
-        "tagType": "UdtType",
         "parameters": {
             "RTAC_Device": {"dataType": "String", "value": "Default Device"},
             "OPC_Connection_String": {
@@ -350,15 +354,21 @@ def create_parameterized_backup(root: Path) -> Path:
             },
             "Control_Tag": {"dataType": "String", "value": "Binary Input 0"},
         },
-        "tags": [{
-            "name": "Status",
-            "tagType": "AtomicTag",
-            "valueSource": "opc",
-            "opcItemPath": (
-                "{bindType=parameter, "
-                "binding={OPC_Connection_String}.{Control_Tag}}"
-            ),
-        }],
+        "tags": [
+            {
+                "name": "Status",
+                "tagType": "AtomicTag",
+                "valueSource": "opc",
+                "opcItemPath": (
+                    "{bindType=parameter, "
+                    "binding={OPC_Connection_String}.{Control_Tag}}"
+                ),
+            },
+            {
+                "tagType": "AtomicTag",
+                "valueSource": "memory",
+            },
+        ],
     }]
     instance = [{
         "name": "Motor_1",

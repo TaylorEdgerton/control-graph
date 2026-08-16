@@ -105,7 +105,7 @@ def parse_ignition(
             tag_documents = _read_json_documents(root, source)
             devices = _find_devices(tag_documents, graph)
 
-    tag_roots: list[tuple[dict[str, Any], str, str, str, str]] = []
+    tag_roots: list[tuple[dict[str, Any], str, str, str, str, bool]] = []
     seen: set[tuple[str, int]] = set()
     selected_providers = {provider.casefold() for provider in tag_providers or []}
     for rel, display, data in tag_documents:
@@ -113,22 +113,25 @@ def parse_ignition(
         if selected_providers and provider.casefold() not in selected_providers:
             continue
         path_prefix = _tag_path_prefix(rel, provider)
+        definition_resource = _is_udt_definition_resource(rel)
         for tag, location in _tag_roots(data):
             marker = (display, id(tag))
             if marker not in seen:
                 seen.add(marker)
-                tag_roots.append((tag, provider, display, location, path_prefix))
+                tag_roots.append(
+                    (tag, provider, display, location, path_prefix, definition_resource)
+                )
 
     definitions: dict[str, tuple[dict[str, Any], str, str, str, str]] = {}
-    for tag, provider, display, location, path_prefix in tag_roots:
-        if _tag_kind(tag) == "definition":
+    for tag, provider, display, location, path_prefix, definition_resource in tag_roots:
+        if _tag_kind(tag, definition_resource) == "definition":
             for key in (_text(tag, "typeId"), _text(tag, "name")):
                 if key:
                     definitions[_type_key(key)] = (tag, provider, display, location, path_prefix)
             _add_definition(graph, tag, provider, display, location, path_prefix)
 
-    for tag, provider, display, location, path_prefix in tag_roots:
-        kind = _tag_kind(tag)
+    for tag, provider, display, location, path_prefix, definition_resource in tag_roots:
+        kind = _tag_kind(tag, definition_resource)
         if kind == "definition":
             continue
         if kind == "instance":
@@ -223,6 +226,11 @@ def _is_tag_resource_path(path: str) -> bool:
             or "/ignition/tag-type-definition/" in f"/{lower}"
         )
     )
+
+
+def _is_udt_definition_resource(path: str) -> bool:
+    normalized = "/" + path.replace("\\", "/").casefold()
+    return "/ignition/tag-type-definition/" in normalized
 
 
 def _inspect_sqlite_tag_configurations(archive: zipfile.ZipFile) -> tuple[int, list[str]]:
@@ -352,7 +360,10 @@ def _read_sqlite_tag_documents(root: Path, archive: Path) -> list[tuple[str, str
             if not isinstance(config, dict):
                 continue
             config = copy.deepcopy(config)
-            config.setdefault("name", row["NAME"] or "Unnamed tag")
+            name = _text(config, "name") or str(row["NAME"] or "").strip()
+            if not name:
+                continue
+            config["name"] = name
             records[str(row["ID"])] = (
                 int(row["PROVIDERID"] or 0),
                 str(row["FOLDERID"]) if row["FOLDERID"] else None,
@@ -529,12 +540,16 @@ def _add_definition(
     location: str,
     path_prefix: str = "",
 ) -> str:
-    name = _text(tag, "name") or "Unnamed UDT definition"
+    name = _text(tag, "name")
+    if not name:
+        return ""
     full_name = _join_tag_path(path_prefix or f"[{provider}]_types_", name)
     node_id = stable_id("udt_definition", display, location, full_name)
     evidence = Evidence(display, location, _json_detail(tag))
+    attributes = _scalar_values(tag)
+    attributes["isTemplate"] = True
     graph.add_node(
-        ControlNode(node_id, "UDT_DEFINITION", full_name, "IGNITION", _scalar_values(tag), [evidence])
+        ControlNode(node_id, "UDT_DEFINITION", full_name, "IGNITION", attributes, [evidence])
     )
     return node_id
 
@@ -549,12 +564,16 @@ def _add_instance(
     definitions: dict[str, tuple[dict[str, Any], str, str, str, str]],
     devices: dict[str, tuple[str, dict[str, Any]]],
 ) -> None:
-    name = _text(tag, "name") or "Unnamed UDT instance"
+    name = _text(tag, "name")
+    if not name:
+        return
     instance_path = _join_tag_path(path_prefix or f"[{provider}]", name)
     evidence = Evidence(display, location, _json_detail(tag))
     instance_id = stable_id("udt_instance", display, location, instance_path)
+    instance_attributes = _scalar_values(tag)
+    instance_attributes["isTemplate"] = False
     graph.add_node(
-        ControlNode(instance_id, "UDT_INSTANCE", instance_path, "IGNITION", _scalar_values(tag), [evidence])
+        ControlNode(instance_id, "UDT_INSTANCE", instance_path, "IGNITION", instance_attributes, [evidence])
     )
     type_id = _text(tag, "typeId")
     definition_record = definitions.get(_type_key(type_id))
@@ -618,12 +637,15 @@ def _add_resolved_member(
     template_tag = tag
     parameters = _resolved_parameters(parameters, _parameters(template_tag))
     tag = _substitute(template_tag, parameters)
-    name = _text(tag, "name") or "Unnamed member"
+    name = _text(tag, "name")
+    if not name:
+        return
     tag_path = _join_tag_path(path_prefix, name)
     evidence = [definition_evidence, instance_evidence]
     member_id = stable_id("udt_member", display, location, tag_path)
     member_attributes = _scalar_values(tag)
     member_attributes["resolvedParameters"] = copy.deepcopy(parameters)
+    member_attributes["isTemplate"] = False
     graph.add_node(
         ControlNode(member_id, "UDT_MEMBER", tag_path, "IGNITION", member_attributes, evidence)
     )
@@ -652,6 +674,7 @@ def _add_resolved_member(
     tag_id = stable_id("ignition_tag", display, location, tag_path)
     tag_attributes = _scalar_values(tag)
     tag_attributes["resolvedParameters"] = copy.deepcopy(parameters)
+    tag_attributes["isTemplate"] = False
     graph.add_node(ControlNode(tag_id, "IGNITION_TAG", tag_path, "IGNITION", tag_attributes, evidence))
     graph.add_edge(member_id, tag_id, "materializes_as_tag", evidence=evidence)
     _add_source(
@@ -678,7 +701,9 @@ def _add_atomic_tree(
     parent_id: str | None,
     path_prefix: str,
 ) -> None:
-    name = _text(tag, "name") or "Unnamed tag"
+    name = _text(tag, "name")
+    if not name:
+        return
     tag_path = _join_tag_path(path_prefix or f"[{provider}]", name)
     evidence = [Evidence(display, location, _json_detail(tag))]
     tag_id = stable_id("ignition_tag", display, location, tag_path)
@@ -877,7 +902,9 @@ def _is_tag(value: dict[str, Any]) -> bool:
     return bool(_text(value, "name") and keys.intersection(TAG_MARKERS))
 
 
-def _tag_kind(tag: dict[str, Any]) -> str:
+def _tag_kind(tag: dict[str, Any], definition_resource: bool = False) -> str:
+    if definition_resource:
+        return "definition"
     tag_type = _text(tag, "tagType", "type").lower().replace(" ", "")
     type_id = _text(tag, "typeId")
     if tag_type in {"udttype", "datatype", "definition"} or _bool(tag, "isUdtDefinition"):
@@ -890,7 +917,10 @@ def _tag_kind(tag: dict[str, Any]) -> str:
 def _children(tag: dict[str, Any]) -> list[dict[str, Any]]:
     for key, value in tag.items():
         if clean_key(key) in {"tags", "members", "children"} and isinstance(value, list):
-            return [item for item in value if isinstance(item, dict)]
+            return [
+                item for item in value
+                if isinstance(item, dict) and bool(_text(item, "name"))
+            ]
     return []
 
 

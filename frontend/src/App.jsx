@@ -83,6 +83,11 @@ export default function App() {
     setEvidenceEdge(null);
   }
 
+  function toggleCanvasNode(node) {
+    setSelectedId((current) => current === node.id ? null : node.id);
+    setEvidenceEdge(null);
+  }
+
   function toggleFilter(value, values, setter) {
     setter(values.includes(value) ? values.filter((item) => item !== value) : [...values, value]);
   }
@@ -167,7 +172,7 @@ export default function App() {
         traceMode={traceMode}
         systemFilters={systemFilters}
         typeFilters={typeFilters}
-        selectNode={selectNode}
+        selectNode={toggleCanvasNode}
         inspectEdge={setEvidenceEdge}
       />
 

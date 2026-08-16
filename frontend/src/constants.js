@@ -8,7 +8,7 @@ export const KIND_LABELS = {
   IEC_LOGIC: 'IEC logic',
   IGNITION_DEVICE: 'Connection device',
   OPC_ITEM: 'OPC item',
-  UDT_DEFINITION: 'UDT definition',
+  UDT_DEFINITION: 'UDT template',
   UDT_INSTANCE: 'UDT instance',
   UDT_MEMBER: 'UDT member',
   IGNITION_TAG: 'Ignition tag',
