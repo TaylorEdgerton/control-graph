@@ -15,11 +15,11 @@ make run
 
 Open `http://127.0.0.1:8765`. Open `http://127.0.0.1:8765/docs` for the API documentation.
 
-`make run` uses the demonstration files. The demonstration contains one complete DNP3 lineage and one unresolved Ignition source. Use **Import Project** in the application to stage one or more `.gwbk` files, review the detected version and configuration format, select the tag providers, and add the backups to the analysis. Imported backups can be removed later.
+`make run` Use **Import Project** in the application to stage one or more `.gwbk` files, review the detected version and configuration format, select the tag providers, and add the backups to the analysis. Imported backups can be removed later.
 
 ## Use project files
 
-Build the user interface. Then give the SEL XML file and the Ignition backup to the command.
+Build the user interface. You can optionally preload an SEL XML file, an Ignition backup, or both from the command line.
 
 ```bash
 make build
@@ -54,4 +54,3 @@ make check
 The SEL parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields. 
 
 The Ignition parser extracts a `.gwbk` archive and reads the relevant filesystem resources. It resolves UDT parameters and member overrides. The resolver supports DNP3, Modbus, and OPC item identities.
-

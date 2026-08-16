@@ -9,10 +9,12 @@ from .sel_parser import parse_sel
 
 
 def load_sources(
-    sel_path: str | Path,
-    ignition_path: str | Path,
+    sel_path: str | Path | None = None,
+    ignition_path: str | Path | None = None,
 ) -> tuple[ControlGraph, ControlGraph]:
-    return parse_sel(sel_path), parse_ignition(ignition_path)
+    sel_graph = parse_sel(sel_path) if sel_path else ControlGraph()
+    ignition_graph = parse_ignition(ignition_path) if ignition_path else ControlGraph()
+    return sel_graph, ignition_graph
 
 
 def build_graph(sel_path: str | Path, ignition_path: str | Path) -> ControlGraph:

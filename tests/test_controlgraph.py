@@ -2,12 +2,15 @@ from __future__ import annotations
 
 from collections import deque
 import asyncio
+import sqlite3
 from pathlib import Path
 import tempfile
 import unittest
+from unittest.mock import patch
 import zipfile
 
 from controlgraph.ignition_parser import inspect_ignition_backup, parse_ignition
+from controlgraph.cli import main
 from controlgraph.loader import build_graph
 from controlgraph.model import ControlNode, stable_id
 from controlgraph.resolver import resolve
@@ -19,11 +22,19 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 SEL = ROOT / "examples" / "sel_project.xml"
 IGNITION = ROOT / "examples" / "ignition_backup"
-GATEWAY_81 = ROOT / "docker-test_Ignition-backup-20260816-0921.gwbk"
-GATEWAY_83 = ROOT / "8.3docker-test_Ignition-backup-20260816-0935.gwbk"
 
 
 class ControlGraphTests(unittest.TestCase):
+    def test_cli_starts_without_example_inputs(self) -> None:
+        with patch("controlgraph.cli.serve") as serve_mock:
+            with patch("sys.argv", ["controlgraph", "--api-only"]):
+                main()
+
+        graph = serve_mock.call_args.args[0]
+        self.assertEqual(graph.summary()["nodeCount"], 0)
+        self.assertEqual(serve_mock.call_args.kwargs["sel_graph"].summary()["nodeCount"], 0)
+        self.assertEqual(serve_mock.call_args.kwargs["ignition_graph"].summary()["nodeCount"], 0)
+
     def test_demo_has_complete_deterministic_lineage(self) -> None:
         graph = build_graph(SEL, IGNITION)
         start = next(node.id for node in graph.nodes.values() if node.name == "Relay_A")
@@ -62,27 +73,30 @@ class ControlGraphTests(unittest.TestCase):
         self.assertTrue(run_source.evidence[0].source.startswith(str(archive_path)))
 
     def test_gateway_backup_formats_and_tag_providers_are_detected(self) -> None:
-        version_81 = inspect_ignition_backup(GATEWAY_81)
-        version_83 = inspect_ignition_backup(GATEWAY_83)
+        with tempfile.TemporaryDirectory() as temp:
+            gateway_81, gateway_83 = create_gateway_backups(Path(temp))
+            version_81 = inspect_ignition_backup(gateway_81)
+            version_83 = inspect_ignition_backup(gateway_83)
 
-        self.assertEqual(version_81.version_family, "8.1")
-        self.assertEqual(version_81.configuration_format, "sqlite")
-        self.assertEqual(version_81.tag_providers, ("default", "System"))
-        self.assertIn("test", version_81.projects)
-        self.assertEqual(version_83.version_family, "8.3")
-        self.assertEqual(version_83.configuration_format, "json")
-        self.assertEqual(version_83.tag_providers, ("default", "fes"))
-        self.assertIn("test", version_83.projects)
+            self.assertEqual(version_81.version_family, "8.1")
+            self.assertEqual(version_81.configuration_format, "sqlite")
+            self.assertEqual(version_81.tag_providers, ("default", "System"))
+            self.assertIn("test", version_81.projects)
+            self.assertEqual(version_83.version_family, "8.3")
+            self.assertEqual(version_83.configuration_format, "json")
+            self.assertEqual(version_83.tag_providers, ("default", "fes"))
+            self.assertIn("test", version_83.projects)
 
-    def test_real_backup_tags_can_be_filtered_by_provider(self) -> None:
-        graph_81 = parse_ignition(GATEWAY_81, ["default"])
-        graph_83 = parse_ignition(GATEWAY_83, ["default"])
+    def test_backup_tags_can_be_filtered_by_provider(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            gateway_81, gateway_83 = create_gateway_backups(Path(temp))
+            graph_81 = parse_ignition(gateway_81, ["default"])
+            graph_83 = parse_ignition(gateway_83, ["default"])
 
-        tags_81 = {node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_TAG"}
-        tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
-        self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
-        self.assertIn("[default]test", tags_83)
-        self.assertTrue(all(name.startswith("[default]") for name in tags_83))
+            tags_81 = {node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_TAG"}
+            tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
+            self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
+            self.assertEqual(tags_83, {"[default]test"})
 
     def test_unresolved_mapping_is_explicit(self) -> None:
         graph = build_graph(SEL, IGNITION)
@@ -222,6 +236,56 @@ async def import_workflow(app, path: Path) -> tuple[httpx.Response, ...]:
         imported_graph = await client.get("/api/graph")
         removed = await client.delete(f"/api/imports/{record_id}")
         return staged, confirmed, imported_graph, removed
+
+
+def create_gateway_backups(root: Path) -> tuple[Path, Path]:
+    database = root / "gateway.idb"
+    with sqlite3.connect(database) as connection:
+        connection.execute(
+            "CREATE TABLE TAGCONFIG "
+            "(ID TEXT, PROVIDERID INTEGER, FOLDERID TEXT, RANK INTEGER, NAME TEXT, CFG TEXT)"
+        )
+        connection.execute("CREATE TABLE SIMPLETAGPROVIDERPROFILE (PROVIDERID INTEGER, NAME TEXT)")
+        connection.execute("INSERT INTO SIMPLETAGPROVIDERPROFILE VALUES (1, 'System')")
+        rows = [
+            ("default-1", 0, None, 0, "testtag1"),
+            ("default-2", 0, None, 1, "testtag2"),
+            ("system-1", 1, None, 0, "SystemTag"),
+        ]
+        for tag_id, provider_id, folder_id, rank, name in rows:
+            configuration = (
+                '{"name":"' + name + '","tagType":"AtomicTag","valueSource":"memory"}'
+            )
+            connection.execute(
+                "INSERT INTO TAGCONFIG VALUES (?, ?, ?, ?, ?, ?)",
+                (tag_id, provider_id, folder_id, rank, name, configuration),
+            )
+
+    gateway_81 = root / "gateway-8.1.gwbk"
+    with zipfile.ZipFile(gateway_81, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.1.48.2025042910</version><backup-type>DATA_ONLY</backup-type></backup>",
+        )
+        archive.write(database, "db_backup_sqlite.idb")
+        archive.writestr("projects/test/project.json", "{}")
+
+    gateway_83 = root / "gateway-8.3.gwbk"
+    with zipfile.ZipFile(gateway_83, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/tags.json",
+            '[{"name":"test","tagType":"AtomicTag","valueSource":"memory"}]',
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/fes/tags.json",
+            '[{"name":"Other","tagType":"AtomicTag","valueSource":"memory"}]',
+        )
+        archive.writestr("projects/test/project.json", "{}")
+    return gateway_81, gateway_83
 
 
 if __name__ == "__main__":
