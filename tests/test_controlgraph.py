@@ -7,7 +7,7 @@ import tempfile
 import unittest
 import zipfile
 
-from controlgraph.ignition_parser import parse_ignition
+from controlgraph.ignition_parser import inspect_ignition_backup, parse_ignition
 from controlgraph.loader import build_graph
 from controlgraph.model import ControlNode, stable_id
 from controlgraph.resolver import resolve
@@ -19,6 +19,8 @@ import httpx
 ROOT = Path(__file__).resolve().parent.parent
 SEL = ROOT / "examples" / "sel_project.xml"
 IGNITION = ROOT / "examples" / "ignition_backup"
+GATEWAY_81 = ROOT / "docker-test_Ignition-backup-20260816-0921.gwbk"
+GATEWAY_83 = ROOT / "8.3docker-test_Ignition-backup-20260816-0935.gwbk"
 
 
 class ControlGraphTests(unittest.TestCase):
@@ -59,6 +61,29 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(run_source.attributes["identity"]["host"], "10.20.1.20")
         self.assertTrue(run_source.evidence[0].source.startswith(str(archive_path)))
 
+    def test_gateway_backup_formats_and_tag_providers_are_detected(self) -> None:
+        version_81 = inspect_ignition_backup(GATEWAY_81)
+        version_83 = inspect_ignition_backup(GATEWAY_83)
+
+        self.assertEqual(version_81.version_family, "8.1")
+        self.assertEqual(version_81.configuration_format, "sqlite")
+        self.assertEqual(version_81.tag_providers, ("default", "System"))
+        self.assertIn("test", version_81.projects)
+        self.assertEqual(version_83.version_family, "8.3")
+        self.assertEqual(version_83.configuration_format, "json")
+        self.assertEqual(version_83.tag_providers, ("default", "fes"))
+        self.assertIn("test", version_83.projects)
+
+    def test_real_backup_tags_can_be_filtered_by_provider(self) -> None:
+        graph_81 = parse_ignition(GATEWAY_81, ["default"])
+        graph_83 = parse_ignition(GATEWAY_83, ["default"])
+
+        tags_81 = {node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_TAG"}
+        tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
+        self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
+        self.assertIn("[default]test", tags_83)
+        self.assertTrue(all(name.startswith("[default]") for name in tags_83))
+
     def test_unresolved_mapping_is_explicit(self) -> None:
         graph = build_graph(SEL, IGNITION)
         issues = [node for node in graph.nodes.values() if node.kind == "MAPPING_ISSUE"]
@@ -89,24 +114,71 @@ class ControlGraphTests(unittest.TestCase):
     def test_fastapi_exposes_documented_graph_endpoint(self) -> None:
         graph = build_graph(SEL, IGNITION)
         app = create_app(graph, serve_static=False)
-        schema = app.openapi()
-        self.assertIn("/api/graph", schema["paths"])
-        self.assertEqual(schema["info"]["title"], "ControlGraph API")
-        health, response, docs = asyncio.run(
-            get_responses(app, "/api/health", "/api/graph", "/docs")
+        try:
+            schema = app.openapi()
+            self.assertIn("/api/graph", schema["paths"])
+            self.assertIn("/api/imports/stage", schema["paths"])
+            self.assertIn("/api/imports/confirm", schema["paths"])
+            self.assertEqual(schema["info"]["title"], "ControlGraph API")
+            health, response, docs = asyncio.run(
+                get_responses(app, "/api/health", "/api/graph", "/docs")
+            )
+            self.assertEqual(health.json(), {"status": "ok"})
+            self.assertEqual(response.status_code, 200)
+            self.assertEqual(response.json()["summary"]["nodeCount"], len(graph.nodes))
+            self.assertEqual(docs.status_code, 200)
+        finally:
+            app.state.workspace.close()
+
+    def test_import_api_stages_confirms_and_removes_a_backup(self) -> None:
+        graph = build_graph(SEL, IGNITION)
+        app = create_app(
+            graph,
+            serve_static=False,
+            sel_graph=parse_sel(SEL),
+            ignition_graph=parse_ignition(IGNITION),
         )
-        self.assertEqual(health.json(), {"status": "ok"})
-        self.assertEqual(response.status_code, 200)
-        self.assertEqual(response.json()["summary"]["nodeCount"], len(graph.nodes))
-        self.assertEqual(docs.status_code, 200)
+        try:
+            with tempfile.TemporaryDirectory() as temp:
+                backup = Path(temp) / "gateway-8.3.gwbk"
+                with zipfile.ZipFile(backup, "w") as archive:
+                    archive.writestr(
+                        "backupinfo.xml",
+                        "<backup><version>8.3.6.2026042713</version>"
+                        "<timestamp>2026-08-16 09:35:56</timestamp>"
+                        "<backup-type>ALL</backup-type></backup>",
+                    )
+                    archive.writestr(
+                        "config/resources/core/ignition/tag-definition/default/tags.json",
+                        '[{"name":"ApiTag","tagType":"AtomicTag","valueSource":"memory"}]',
+                    )
+                staged, confirmed, imported_graph, removed = asyncio.run(import_workflow(app, backup))
+                self.assertEqual(staged.status_code, 200)
+                staged_backup = staged.json()["staged"][0]
+                self.assertEqual(staged_backup["versionFamily"], "8.3")
+                self.assertEqual(staged_backup["configurationFormat"], "json")
+                self.assertEqual(staged_backup["tagProviders"], ["default"])
+                self.assertEqual(confirmed.status_code, 200)
+                imported = confirmed.json()["imports"][0]
+                self.assertEqual(imported["selectedTagProviders"], ["default"])
+                imported_names = {node["name"] for node in imported_graph.json()["nodes"]}
+                self.assertIn("[default]ApiTag", imported_names)
+                self.assertEqual(removed.status_code, 200)
+                restored_names = {node["name"] for node in removed.json()["graph"]["nodes"]}
+                self.assertIn("[default]Pump_01/Run", restored_names)
+        finally:
+            app.state.workspace.close()
 
     def test_built_mui_frontend_is_served_when_available(self) -> None:
         if not (ROOT / "frontend" / "dist" / "index.html").exists():
             self.skipTest("Run 'make build' to create the frontend")
         app = create_app(build_graph(SEL, IGNITION), serve_static=True)
-        response, = asyncio.run(get_responses(app, "/"))
-        self.assertEqual(response.status_code, 200)
-        self.assertIn("ControlGraph", response.text)
+        try:
+            response, = asyncio.run(get_responses(app, "/"))
+            self.assertEqual(response.status_code, 200)
+            self.assertIn("ControlGraph", response.text)
+        finally:
+            app.state.workspace.close()
 
 
 def directed_path(graph, start: str, end: str) -> list[str] | None:
@@ -128,6 +200,28 @@ async def get_responses(app, *paths: str) -> tuple[httpx.Response, ...]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
         return tuple([await client.get(path) for path in paths])
+
+
+async def import_workflow(app, path: Path) -> tuple[httpx.Response, ...]:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
+        with path.open("rb") as upload:
+            staged = await client.post(
+                "/api/imports/stage",
+                content=upload.read(),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-ControlGraph-Filename": path.name,
+                },
+            )
+        record_id = staged.json()["staged"][0]["id"]
+        confirmed = await client.post(
+            "/api/imports/confirm",
+            json={"selections": [{"stagedId": record_id, "tagProviders": ["default"]}]},
+        )
+        imported_graph = await client.get("/api/graph")
+        removed = await client.delete(f"/api/imports/{record_id}")
+        return staged, confirmed, imported_graph, removed
 
 
 if __name__ == "__main__":

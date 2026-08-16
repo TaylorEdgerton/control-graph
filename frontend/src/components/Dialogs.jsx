@@ -1,6 +1,5 @@
 import React from 'react';
 import {
-  Alert,
   Button,
   Chip,
   Dialog,
@@ -42,22 +41,6 @@ export function EvidenceDialog({ edge, index, close }) {
         </Paper>)}
       </Stack>
     </DialogContent>}
-    <DialogActions><Button onClick={close}>Close</Button></DialogActions>
-  </Dialog>;
-}
-
-export function ImportDialog({ open, close }) {
-  return <Dialog open={open} onClose={close} fullWidth maxWidth="sm">
-    <DialogTitle>Import Project</DialogTitle>
-    <DialogContent dividers>
-      <Typography variant="body2">Restart ControlGraph with the SEL XML file and the Ignition Gateway backup.</Typography>
-      <Paper variant="outlined" sx={{ p: 1.5, mt: 2, bgcolor: 'background.default' }}>
-        <Typography component="code" variant="caption" sx={{ overflowWrap: 'anywhere' }}>
-          .venv/bin/python -m controlgraph --sel plant.xml --ignition gateway.gwbk
-        </Typography>
-      </Paper>
-      <Alert severity="info" sx={{ mt: 2 }}>Browser upload is not part of this local proof of concept.</Alert>
-    </DialogContent>
     <DialogActions><Button onClick={close}>Close</Button></DialogActions>
   </Dialog>;
 }

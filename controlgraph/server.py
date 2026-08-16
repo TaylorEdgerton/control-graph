@@ -1,15 +1,21 @@
 from __future__ import annotations
 
+import hashlib
 from pathlib import Path
 import mimetypes
 from typing import Any
+from urllib.parse import unquote
 
-from fastapi import FastAPI
+from fastapi import FastAPI, Header, HTTPException, Request
 from fastapi.responses import JSONResponse, Response
 from pydantic import BaseModel, Field
 import uvicorn
 
 from .model import ControlGraph
+from .workspace import AnalysisWorkspace
+
+
+MAX_UPLOAD_SIZE = 500_000_000
 
 
 class EvidenceResponse(BaseModel):
@@ -50,14 +56,66 @@ class GraphResponse(BaseModel):
     summary: SummaryResponse
 
 
-def create_app(graph: ControlGraph, *, serve_static: bool = True) -> FastAPI:
+class BackupFileResponse(BaseModel):
+    id: str
+    name: str
+    size: int
+    status: str
+    fileType: str
+    version: str
+    versionFamily: str
+    timestamp: str
+    backupType: str
+    configurationFormat: str
+    configurationSource: str
+    tagConfigurationCount: int
+    tagProviders: list[str]
+    projects: list[str]
+    selectedTagProviders: list[str]
+    nodeCount: int | None = None
+    deviceCount: int | None = None
+    tagCount: int | None = None
+
+
+class WorkspaceResponse(BaseModel):
+    staged: list[BackupFileResponse]
+    imports: list[BackupFileResponse]
+
+
+class StagedResponse(BaseModel):
+    staged: list[BackupFileResponse]
+
+
+class ImportSelection(BaseModel):
+    stagedId: str
+    tagProviders: list[str] = Field(min_length=1)
+
+
+class ConfirmImportsRequest(BaseModel):
+    selections: list[ImportSelection] = Field(min_length=1)
+
+
+class ImportMutationResponse(BaseModel):
+    imports: list[BackupFileResponse]
+    graph: GraphResponse
+
+
+def create_app(
+    graph: ControlGraph,
+    *,
+    serve_static: bool = True,
+    sel_graph: ControlGraph | None = None,
+    ignition_graph: ControlGraph | None = None,
+) -> FastAPI:
     app = FastAPI(
         title="ControlGraph API",
         version="0.1.0",
         description="Inspect the resolved lineage between an SEL RTAC project and Ignition tags.",
         contact={"name": "Local ControlGraph PoC"},
     )
-    payload = graph.to_dict()
+    workspace = AnalysisWorkspace(graph, sel_graph=sel_graph, ignition_graph=ignition_graph)
+    app.state.workspace = workspace
+    app.add_event_handler("shutdown", workspace.close)
 
     @app.get("/api/health", tags=["system"], summary="Check API health")
     async def health() -> dict[str, str]:
@@ -70,14 +128,113 @@ def create_app(graph: ControlGraph, *, serve_static: bool = True) -> FastAPI:
         summary="Get the complete resolved control graph",
     )
     async def get_graph() -> dict[str, Any]:
-        return payload
+        return workspace.graph_payload()
 
     @app.get("/api/nodes/{node_id}", response_model=NodeResponse, tags=["lineage"], summary="Get one node")
     async def get_node(node_id: str) -> dict[str, Any] | JSONResponse:
+        payload = workspace.graph_payload()
         node = next((item for item in payload["nodes"] if item["id"] == node_id), None)
         if node is None:
             return JSONResponse(status_code=404, content={"detail": "The node does not exist."})
         return node
+
+    @app.get(
+        "/api/imports",
+        response_model=WorkspaceResponse,
+        tags=["imports"],
+        summary="List staged and imported Gateway backups",
+    )
+    async def list_imports() -> dict[str, Any]:
+        return {"staged": workspace.list_staged(), "imports": workspace.list_imports()}
+
+    @app.post(
+        "/api/imports/stage",
+        response_model=StagedResponse,
+        tags=["imports"],
+        summary="Upload and inspect Gateway backups before import",
+        openapi_extra={
+            "requestBody": {
+                "required": True,
+                "content": {
+                    "application/octet-stream": {
+                        "schema": {"type": "string", "format": "binary"}
+                    }
+                },
+            }
+        },
+    )
+    async def stage_import(
+        request: Request,
+        encoded_filename: str = Header(alias="X-ControlGraph-Filename"),
+    ) -> dict[str, Any]:
+        filename = unquote(encoded_filename) or "gateway.gwbk"
+        record_id, destination = workspace.reserve_upload(filename)
+        size = 0
+        digest = hashlib.sha256()
+        try:
+            with destination.open("wb") as target:
+                async for chunk in request.stream():
+                    size += len(chunk)
+                    if size > MAX_UPLOAD_SIZE:
+                        raise ValueError("The selected backup exceeds the 500 MB upload limit.")
+                    digest.update(chunk)
+                    target.write(chunk)
+            if size == 0:
+                raise ValueError("The selected backup is empty.")
+            result = workspace.finish_stage(
+                record_id,
+                filename,
+                destination,
+                size,
+                digest.hexdigest(),
+            )
+        except (OSError, ValueError) as error:
+            workspace.discard_unfinished(destination)
+            raise HTTPException(status_code=400, detail=str(error)) from error
+        except Exception:
+            workspace.discard_unfinished(destination)
+            raise
+        return {"staged": [result]}
+
+    @app.delete(
+        "/api/imports/staged/{record_id}",
+        response_model=StagedResponse,
+        tags=["imports"],
+        summary="Discard a staged Gateway backup",
+    )
+    async def discard_staged_import(record_id: str) -> dict[str, Any]:
+        try:
+            staged = workspace.discard_stage(record_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="The staged backup does not exist.") from error
+        return {"staged": staged}
+
+    @app.post(
+        "/api/imports/confirm",
+        response_model=ImportMutationResponse,
+        tags=["imports"],
+        summary="Confirm staged backups and add them to the analysis",
+    )
+    async def confirm_imports(request: ConfirmImportsRequest) -> dict[str, Any]:
+        try:
+            selections = {selection.stagedId: selection.tagProviders for selection in request.selections}
+            return workspace.confirm(selections)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail=str(error)) from error
+        except ValueError as error:
+            raise HTTPException(status_code=400, detail=str(error)) from error
+
+    @app.delete(
+        "/api/imports/{record_id}",
+        response_model=ImportMutationResponse,
+        tags=["imports"],
+        summary="Remove a Gateway backup from the analysis",
+    )
+    async def remove_import(record_id: str) -> dict[str, Any]:
+        try:
+            return workspace.remove_import(record_id)
+        except KeyError as error:
+            raise HTTPException(status_code=404, detail="The imported backup does not exist.") from error
 
     if serve_static:
         static_root = Path(__file__).resolve().parent.parent / "frontend" / "dist"
@@ -109,7 +266,19 @@ def serve(
     port: int = 8765,
     *,
     serve_static: bool = True,
+    sel_graph: ControlGraph | None = None,
+    ignition_graph: ControlGraph | None = None,
 ) -> None:
     print(f"ControlGraph is ready at http://{host}:{port}")
     print(f"API documentation is ready at http://{host}:{port}/docs")
-    uvicorn.run(create_app(graph, serve_static=serve_static), host=host, port=port, log_level="info")
+    uvicorn.run(
+        create_app(
+            graph,
+            serve_static=serve_static,
+            sel_graph=sel_graph,
+            ignition_graph=ignition_graph,
+        ),
+        host=host,
+        port=port,
+        log_level="info",
+    )

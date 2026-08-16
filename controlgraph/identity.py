@@ -7,7 +7,10 @@ from typing import Any, Mapping
 ALIASES = {
     "host": ("host", "hostname", "ip", "ipaddress", "endpoint", "serverurl"),
     "device": ("device", "devicename", "connection", "channel"),
-    "unit": ("unit", "unitid", "slave", "slaveid", "station", "outstation", "outstationid"),
+    "unit": (
+        "unit", "unitid", "slave", "slaveid", "station", "outstation", "outstationid",
+        "destinationaddress",
+    ),
     "object": ("object", "objecttype", "pointtype", "registertype", "type"),
     "index": ("index", "pointindex", "address", "offset", "register"),
     "nodeid": ("nodeid", "node", "itemid"),

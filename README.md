@@ -1,6 +1,6 @@
 # ControlGraph
 
-ControlGraph is a local proof of concept. It maps SEL RTAC configuration data to Ignition 8.3 tags. It uses exact communication identity when the source data contains enough information. It shows unresolved and ambiguous mappings. It does not use a graph database.
+ControlGraph is a local proof of concept. It maps SEL RTAC configuration data to Ignition 8.1 and 8.3 Gateway tags. It uses exact communication identity when the source data contains enough information. It shows unresolved and ambiguous mappings.
 
 The user interface uses React and Material UI. The API uses FastAPI. OpenAPI documentation is available at `/docs`.
 
@@ -15,7 +15,7 @@ make run
 
 Open `http://127.0.0.1:8765`. Open `http://127.0.0.1:8765/docs` for the API documentation.
 
-`make run` uses the demonstration files. The demonstration contains one complete DNP3 lineage and one unresolved Ignition source.
+`make run` uses the demonstration files. The demonstration contains one complete DNP3 lineage and one unresolved Ignition source. Use **Import Project** in the application to stage one or more `.gwbk` files, review the detected version and configuration format, select the tag providers, and add the backups to the analysis. Imported backups can be removed later.
 
 ## Use project files
 
@@ -51,6 +51,7 @@ make check
 
 ## Parser scope
 
-The SEL parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields. The Ignition parser safely extracts a `.gwbk` archive and reads filesystem JSON resources. It resolves UDT parameters and member overrides. The resolver supports exact DNP3, Modbus, and OPC item identities.
+The SEL parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields. 
 
-Vendor exports can use different field names. Add a small parser adapter when a real export uses a field that the current heuristics do not identify. Each node and relationship keeps its source file, source location, and configuration evidence.
+The Ignition parser extracts a `.gwbk` archive and reads the relevant filesystem resources. It resolves UDT parameters and member overrides. The resolver supports DNP3, Modbus, and OPC item identities.
+

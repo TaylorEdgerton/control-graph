@@ -2,7 +2,8 @@ import React, { useEffect, useMemo, useState } from 'react';
 import { Alert, Box, CircularProgress, Snackbar, Stack, Typography } from '@mui/material';
 import AppHeader from './components/AppHeader.jsx';
 import ControlBrowser from './components/ControlBrowser.jsx';
-import { EvidenceDialog, ImportDialog } from './components/Dialogs.jsx';
+import { EvidenceDialog } from './components/Dialogs.jsx';
+import ImportProjectDialog from './components/ImportProjectDialog.jsx';
 import LineagePanel from './components/LineagePanel.jsx';
 import NodeInspector from './components/NodeInspector.jsx';
 import RelationshipTable from './components/RelationshipTable.jsx';
@@ -117,6 +118,17 @@ export default function App() {
     setNotice(`Validation is complete. ${issueCount} mapping ${issueCount === 1 ? 'issue' : 'issues'} found.`);
   }
 
+  function replaceGraph(nextModel) {
+    setModel(nextModel);
+    setSelectedId((current) => {
+      if (nextModel.nodes.some((node) => node.id === current)) return current;
+      return nextModel.nodes.find((node) => node.kind === 'SEL_DEVICE')?.id
+        || nextModel.nodes[0]?.id
+        || null;
+    });
+    setEvidenceEdge(null);
+  }
+
   return <Box sx={{ minHeight: '100vh', bgcolor: 'background.default' }}>
     <AppHeader
       onImport={() => setImportOpen(true)}
@@ -177,7 +189,12 @@ export default function App() {
     </Box>
 
     <EvidenceDialog edge={evidenceEdge} index={index} close={() => setEvidenceEdge(null)} />
-    <ImportDialog open={importOpen} close={() => setImportOpen(false)} />
+    <ImportProjectDialog
+      open={importOpen}
+      close={() => setImportOpen(false)}
+      onGraphChange={replaceGraph}
+      notify={setNotice}
+    />
     <Snackbar open={Boolean(notice)} autoHideDuration={4000} onClose={() => setNotice('')} message={notice} />
   </Box>;
 }

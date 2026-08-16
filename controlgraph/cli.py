@@ -4,7 +4,8 @@ import argparse
 import json
 from pathlib import Path
 
-from .loader import build_graph
+from .loader import load_sources
+from .resolver import resolve
 from .server import serve
 
 
@@ -29,12 +30,20 @@ def main() -> None:
     if not sel_path or not ignition_path:
         parser.error("Use --demo, or give both --sel and --ignition.")
 
-    graph = build_graph(sel_path, ignition_path)
+    sel_graph, ignition_graph = load_sources(sel_path, ignition_path)
+    graph = resolve(sel_graph, ignition_graph)
     if args.export:
         args.export.write_text(json.dumps(graph.to_dict(), indent=2, ensure_ascii=False), encoding="utf-8")
         print(f"Wrote {len(graph.nodes)} nodes and {len(graph.edges)} edges to {args.export}")
         return
-    serve(graph, args.host, args.port, serve_static=not args.api_only)
+    serve(
+        graph,
+        args.host,
+        args.port,
+        serve_static=not args.api_only,
+        sel_graph=sel_graph,
+        ignition_graph=ignition_graph,
+    )
 
 
 if __name__ == "__main__":
