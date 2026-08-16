@@ -207,6 +207,17 @@ class ControlGraphTests(unittest.TestCase):
             for edge in graph.edges.values()
         ))
 
+        with tempfile.TemporaryDirectory() as temp:
+            missing_connection = create_codesys_parameter_backup(
+                Path(temp),
+                include_connection=False,
+            )
+            unresolved_graph = parse_ignition(missing_connection, ["default"])
+        self.assertTrue(any(
+            node.kind == "MAPPING_ISSUE" and "OPC server connection" in node.name
+            for node in unresolved_graph.nodes.values()
+        ))
+
     def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             backup = create_unresolved_parameter_backup(Path(temp))
@@ -622,7 +633,7 @@ def create_child_udt_backup(root: Path) -> Path:
     return backup
 
 
-def create_codesys_parameter_backup(root: Path) -> Path:
+def create_codesys_parameter_backup(root: Path, *, include_connection: bool = True) -> Path:
     definition = [{
         "name": "CodesysPoint",
         "parameters": {
@@ -656,15 +667,16 @@ def create_codesys_parameter_backup(root: Path) -> Path:
             "config/resources/core/ignition/tag-definition/default/Area/tags.json",
             json.dumps(instance),
         )
-        archive.writestr(
-            "config/resources/core/com.inductiveautomation.opcua/client-connection/"
-            "CODESYS Connection/config.json",
-            json.dumps({
-                "name": "CODESYS Connection",
-                "type": "OPC UA",
-                "endpointUrl": "opc.tcp://codesys-controller:4840",
-            }),
-        )
+        if include_connection:
+            archive.writestr(
+                "config/resources/core/com.inductiveautomation.opcua/client-connection/"
+                "CODESYS Connection/config.json",
+                json.dumps({
+                    "name": "CODESYS Connection",
+                    "type": "OPC UA",
+                    "endpointUrl": "opc.tcp://codesys-controller:4840",
+                }),
+            )
         archive.writestr(
             "config/resources/core/com.inductiveautomation.opcua/device/"
             "LV_Meter_MODBUS/config.json",

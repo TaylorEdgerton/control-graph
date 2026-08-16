@@ -553,10 +553,13 @@ def _read_83_connection_documents(root: Path, archive: Path) -> list[tuple[str, 
         attrs: dict[str, Any] = {"name": resource_name}
         _flatten_config(data, attrs)
         attrs = _safe_database_values(attrs)
-        attrs["deviceName"] = resource_name
-        attrs["connectionName"] = str(
+        configured_name = str(
             attrs.get("connectionName") or attrs.get("serverName") or attrs.get("name") or resource_name
         )
+        display_name = resource_name if device_match else configured_name
+        attrs["name"] = display_name
+        attrs["deviceName"] = display_name
+        attrs["connectionName"] = display_name
         attrs["connectionKind"] = "native-device" if device_match else "opc-client"
         attrs["protocol"] = str(attrs.get("type") or attrs.get("protocol") or "")
         display = f"{archive}!{rel}" if archive.is_file() else str(file)
@@ -984,6 +987,29 @@ def _add_source(
     if device_record:
         graph.add_edge(device_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
+    if identity.get("kind") == "opcua" and identity.get("namespaceUri") and not device_record:
+        server_name = identity.get("server", "")
+        message = (
+            f"The configured OPC server connection is not available: {server_name}"
+            if server_name
+            else "The external OPC UA item does not specify an OPC server connection"
+        )
+        issue_id = stable_id("mapping_issue", source_id, message)
+        graph.add_node(ControlNode(
+            issue_id,
+            "MAPPING_ISSUE",
+            message,
+            "IGNITION",
+            {
+                "status": "unresolved",
+                "subject": source_id,
+                "opcServer": server_name,
+                "namespaceUri": identity["namespaceUri"],
+                "nodeId": identity.get("nodeid", ""),
+            },
+            evidence,
+        ))
+        graph.add_edge(source_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
 
 
 def _match_configured_device(
@@ -1012,7 +1038,12 @@ def _match_configured_device(
 
     for reason, candidate in candidates:
         for key, record in devices.items():
-            display_name = str(record[1].get("deviceName") or record[1].get("name") or key)
+            display_name = str(
+                record[1].get("connectionName")
+                or record[1].get("deviceName")
+                or record[1].get("name")
+                or key
+            )
             aliases = {key, display_name}
             aliases.update(
                 str(value)
