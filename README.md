@@ -1,6 +1,6 @@
 # ControlGraph
 
-ControlGraph is a local proof of concept. It maps SEL RTAC configuration data to Ignition 8.1 and 8.3 Gateway tags. It uses exact communication identity when the source data contains enough information. It shows unresolved and ambiguous mappings.
+ControlGraph is a local proof of concept. It maps source-device configuration data to Ignition 8.1 and 8.3 Gateway tags. It uses exact communication identity when the source data contains enough information. It shows unresolved and ambiguous mappings.
 
 The user interface uses React and Material UI. The API uses FastAPI. OpenAPI documentation is available at `/docs`.
 
@@ -19,11 +19,11 @@ Open `http://127.0.0.1:8765`. Open `http://127.0.0.1:8765/docs` for the API docu
 
 ## Use project files
 
-Build the user interface. You can optionally preload an SEL XML file, an Ignition backup, or both from the command line.
+Build the user interface. You can optionally preload a source-device XML file, an Ignition backup, or both from the command line.
 
 ```bash
 make build
-python -m controlgraph --sel plant.xml --ignition gateway.gwbk
+python -m controlgraph --source plant.xml --ignition gateway.gwbk
 ```
 
 The Ignition input can also be an extracted backup directory.
@@ -31,7 +31,7 @@ The Ignition input can also be an extracted backup directory.
 Export the in-memory model to JSON without the web server:
 
 ```bash
-python -m controlgraph --sel plant.xml --ignition gateway.gwbk --export model.json
+python -m controlgraph --source plant.xml --ignition gateway.gwbk --export model.json
 ```
 
 ## Development
@@ -51,6 +51,6 @@ make check
 
 ## Parser scope
 
-The SEL parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields. 
+The source parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields.
 
 The Ignition parser extracts a `.gwbk` archive and reads the relevant filesystem resources. It resolves UDT parameters and member overrides. The resolver supports DNP3, Modbus, and OPC item identities.

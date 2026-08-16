@@ -1,5 +1,5 @@
 <?xml version="1.0" encoding="UTF-8"?>
-<RTACProject name="Water_Plant_RTAC">
+<RTACProject name="Water_Plant_Controller">
   <Devices>
     <Device name="Relay_A" protocol="DNP3" hostname="10.20.1.10" outstationId="7">
       <ProtocolPoint name="Relay_Run" direction="input" objectType="Binary Input" index="5" tag="Relay_Run_Raw" />

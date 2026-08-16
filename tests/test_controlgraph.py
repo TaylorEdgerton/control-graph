@@ -16,12 +16,12 @@ from controlgraph.loader import build_graph
 from controlgraph.model import ControlNode, stable_id
 from controlgraph.resolver import resolve
 from controlgraph.server import create_app
-from controlgraph.sel_parser import parse_sel
+from controlgraph.source_parser import parse_source
 import httpx
 
 
 ROOT = Path(__file__).resolve().parent.parent
-SEL = ROOT / "examples" / "sel_project.xml"
+SOURCE_PROJECT = ROOT / "examples" / "source_project.xml"
 IGNITION = ROOT / "examples" / "ignition_backup"
 
 
@@ -33,11 +33,11 @@ class ControlGraphTests(unittest.TestCase):
 
         graph = serve_mock.call_args.args[0]
         self.assertEqual(graph.summary()["nodeCount"], 0)
-        self.assertEqual(serve_mock.call_args.kwargs["sel_graph"].summary()["nodeCount"], 0)
+        self.assertEqual(serve_mock.call_args.kwargs["source_graph"].summary()["nodeCount"], 0)
         self.assertEqual(serve_mock.call_args.kwargs["ignition_graph"].summary()["nodeCount"], 0)
 
     def test_demo_has_complete_deterministic_lineage(self) -> None:
-        graph = build_graph(SEL, IGNITION)
+        graph = build_graph(SOURCE_PROJECT, IGNITION)
         start = next(node.id for node in graph.nodes.values() if node.name == "Relay_A")
         end = next(
             node.id for node in graph.nodes.values()
@@ -50,7 +50,7 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(
             kinds,
             [
-                "SEL_DEVICE", "PROTOCOL_POINT", "RTAC_TAG", "IEC_LOGIC", "RTAC_TAG",
+                "SOURCE_DEVICE", "PROTOCOL_POINT", "SOURCE_TAG", "IEC_LOGIC", "SOURCE_TAG",
                 "PROTOCOL_POINT", "IGNITION_DEVICE", "OPC_ITEM", "UDT_MEMBER", "IGNITION_TAG",
             ],
         )
@@ -135,22 +135,59 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(instance.attributes["resolvedParameters"]["Control_Tag"], "Binary Input 12")
         self.assertTrue(any(edge.source == device.id and edge.target == source.id for edge in graph.edges.values()))
 
-        resolved = resolve(parse_sel(SEL), graph)
+        resolved = resolve(parse_source(SOURCE_PROJECT), graph)
         match = next(edge for edge in resolved.edges.values() if edge.kind == "communication_identity_match")
         self.assertEqual(match.status, "resolved")
         device_match = next(edge for edge in resolved.edges.values() if edge.kind == "device_connection_match")
         self.assertEqual(resolved.nodes[device_match.source].name, "Ignition_Link")
         self.assertEqual(resolved.nodes[device_match.target].name, "RTAC_A")
 
+    def test_nested_udt_instance_is_distinct_from_its_definition(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_nested_parameterized_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        definitions = [node for node in graph.nodes.values() if node.kind == "UDT_DEFINITION"]
+        instances = [node for node in graph.nodes.values() if node.kind == "UDT_INSTANCE"]
+        sources = [node for node in graph.nodes.values() if node.kind == "OPC_ITEM"]
+        tags = [node for node in graph.nodes.values() if node.kind == "IGNITION_TAG"]
+
+        self.assertEqual(len(definitions), 1)
+        self.assertEqual(len(instances), 1)
+        self.assertTrue(definitions[0].attributes["isTemplate"])
+        self.assertFalse(instances[0].attributes["isTemplate"])
+        self.assertEqual(sources[0].name, "RTAC_A.Binary Input 12")
+        self.assertFalse(any("_types_" in tag.name for tag in tags))
+        self.assertFalse(any("{" in source.name or "}" in source.name for source in sources))
+
+    def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_unresolved_parameter_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        self.assertFalse(any(node.kind == "OPC_ITEM" for node in graph.nodes.values()))
+        issue = next(
+            node for node in graph.nodes.values()
+            if node.kind == "MAPPING_ISSUE" and "unresolved parameters" in node.name
+        )
+        self.assertEqual(
+            issue.attributes["candidatePath"],
+            "{OPC_Connection_String}.{Control_Tag}",
+        )
+        self.assertEqual(
+            issue.attributes["parameters"],
+            ["Control_Tag", "OPC_Connection_String"],
+        )
+
     def test_unresolved_mapping_is_explicit(self) -> None:
-        graph = build_graph(SEL, IGNITION)
+        graph = build_graph(SOURCE_PROJECT, IGNITION)
         issues = [node for node in graph.nodes.values() if node.kind == "MAPPING_ISSUE"]
-        self.assertTrue(any("No SEL protocol point" in issue.name for issue in issues))
+        self.assertTrue(any("No source protocol point" in issue.name for issue in issues))
         unresolved = [edge for edge in graph.edges.values() if edge.status == "unresolved"]
         self.assertTrue(unresolved)
 
     def test_ambiguous_mapping_is_explicit_and_not_resolved(self) -> None:
-        sel = parse_sel(SEL)
+        source_graph = parse_source(SOURCE_PROJECT)
         ignition = parse_ignition(IGNITION)
         source = next(node for node in ignition.nodes.values() if node.name == "[DNP_Gateway]Binary Input 12")
         duplicate = ControlNode(
@@ -162,7 +199,7 @@ class ControlGraphTests(unittest.TestCase):
             list(source.evidence),
         )
         ignition.add_node(duplicate)
-        graph = resolve(sel, ignition)
+        graph = resolve(source_graph, ignition)
         issues = [node for node in graph.nodes.values() if node.attributes.get("status") == "ambiguous"]
         self.assertEqual(len(issues), 1)
         point = next(node for node in graph.nodes.values() if node.name == "Published_Run")
@@ -170,7 +207,7 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(resolved, [])
 
     def test_fastapi_exposes_documented_graph_endpoint(self) -> None:
-        graph = build_graph(SEL, IGNITION)
+        graph = build_graph(SOURCE_PROJECT, IGNITION)
         app = create_app(graph, serve_static=False)
         try:
             schema = app.openapi()
@@ -189,11 +226,11 @@ class ControlGraphTests(unittest.TestCase):
             app.state.workspace.close()
 
     def test_import_api_stages_confirms_and_removes_a_backup(self) -> None:
-        graph = build_graph(SEL, IGNITION)
+        graph = build_graph(SOURCE_PROJECT, IGNITION)
         app = create_app(
             graph,
             serve_static=False,
-            sel_graph=parse_sel(SEL),
+            source_graph=parse_source(SOURCE_PROJECT),
             ignition_graph=parse_ignition(IGNITION),
         )
         try:
@@ -230,7 +267,7 @@ class ControlGraphTests(unittest.TestCase):
     def test_built_mui_frontend_is_served_when_available(self) -> None:
         if not (ROOT / "frontend" / "dist" / "index.html").exists():
             self.skipTest("Run 'make build' to create the frontend")
-        app = create_app(build_graph(SEL, IGNITION), serve_static=True)
+        app = create_app(build_graph(SOURCE_PROJECT, IGNITION), serve_static=True)
         try:
             response, = asyncio.run(get_responses(app, "/"))
             self.assertEqual(response.status_code, 200)
@@ -350,7 +387,7 @@ def create_parameterized_backup(root: Path) -> Path:
             "RTAC_Device": {"dataType": "String", "value": "Default Device"},
             "OPC_Connection_String": {
                 "dataType": "String",
-                "value": "{RTAC_Device}",
+                "value": "{bindType=parameter, binding=RTAC_Device}",
             },
             "Control_Tag": {"dataType": "String", "value": "Binary Input 0"},
         },
@@ -400,6 +437,69 @@ def create_parameterized_backup(root: Path) -> Path:
                 "hostname": "10.20.1.20",
                 "destinationAddress": 1,
             }),
+        )
+    return backup
+
+
+def create_nested_parameterized_backup(root: Path) -> Path:
+    backup = create_parameterized_backup(root)
+    nested = root / "nested-parameterized.gwbk"
+    with zipfile.ZipFile(backup) as source, zipfile.ZipFile(nested, "w") as target:
+        definition = json.loads(source.read(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json"
+        ))[0]
+        instance = json.loads(source.read(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json"
+        ))[0]
+        target.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        target.writestr(
+            "config/resources/core/ignition/tag-definition/default/tags.json",
+            json.dumps([
+                {"name": "_types_", "tagType": "Folder", "tags": [definition]},
+                {"name": "Area", "tagType": "Folder", "tags": [instance]},
+            ]),
+        )
+        target.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/device/RTAC_A/config.json",
+            source.read(
+                "config/resources/core/com.inductiveautomation.opcua/device/RTAC_A/config.json"
+            ),
+        )
+    return nested
+
+
+def create_unresolved_parameter_backup(root: Path) -> Path:
+    backup = root / "unresolved-parameter.gwbk"
+    definition = [{
+        "name": "IncompleteDevice",
+        "parameters": {},
+        "tags": [{
+            "name": "Status",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcItemPath": "{OPC_Connection_String}.{Control_Tag}",
+        }],
+    }]
+    instance = [{
+        "name": "Incomplete_1",
+        "tagType": "UdtInstance",
+        "typeId": "IncompleteDevice",
+    }]
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json",
+            json.dumps(definition),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json",
+            json.dumps(instance),
         )
     return backup
 

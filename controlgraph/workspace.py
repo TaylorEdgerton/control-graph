@@ -50,11 +50,11 @@ class AnalysisWorkspace:
         self,
         initial_graph: ControlGraph,
         *,
-        sel_graph: ControlGraph | None = None,
+        source_graph: ControlGraph | None = None,
         ignition_graph: ControlGraph | None = None,
     ) -> None:
         self._initial_graph = copy.deepcopy(initial_graph)
-        self._sel_graph = copy.deepcopy(sel_graph)
+        self._source_graph = copy.deepcopy(source_graph)
         self._ignition_graph = copy.deepcopy(ignition_graph)
         self._current_graph = copy.deepcopy(initial_graph)
         self._temporary_directory = tempfile.TemporaryDirectory(prefix="controlgraph-workspace-")
@@ -146,7 +146,7 @@ class AnalysisWorkspace:
         self._temporary_directory.cleanup()
 
     def _rebuild(self) -> None:
-        if self._sel_graph is not None:
+        if self._source_graph is not None:
             ignition = ControlGraph()
             if self._imports:
                 for record in self._imports.values():
@@ -154,7 +154,7 @@ class AnalysisWorkspace:
                         ignition.merge(copy.deepcopy(record.graph))
             elif self._ignition_graph is not None:
                 ignition.merge(copy.deepcopy(self._ignition_graph))
-            self._current_graph = resolve(copy.deepcopy(self._sel_graph), ignition)
+            self._current_graph = resolve(copy.deepcopy(self._source_graph), ignition)
             return
 
         graph = copy.deepcopy(self._initial_graph)

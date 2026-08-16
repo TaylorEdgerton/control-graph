@@ -17,7 +17,7 @@ export function buildBrowserTree(nodes) {
     if (!groups.has(node.kind)) groups.set(node.kind, []);
     groups.get(node.kind).push(node);
   }
-  const systemOrder = ['SEL', 'IGNITION', 'RESOLVER'];
+  const systemOrder = ['SOURCE', 'IGNITION', 'RESOLVER'];
   return [...systems.entries()]
     .sort(([left], [right]) => {
       const leftOrder = systemOrder.indexOf(left);
@@ -135,7 +135,7 @@ export function searchNodes(nodes, query, systemFilters, typeFilters) {
 export function findLineage(index, selectedId) {
   if (!selectedId || !index.nodes.has(selectedId)) return null;
   const component = connectedNodes(index, selectedId);
-  const starts = [...component].filter((id) => index.nodes.get(id)?.kind === 'SEL_DEVICE');
+  const starts = [...component].filter((id) => index.nodes.get(id)?.kind === 'SOURCE_DEVICE');
   const ends = new Set([...component].filter((id) => index.nodes.get(id)?.kind === 'IGNITION_TAG'));
   const paths = [];
   for (const start of starts) {
@@ -211,7 +211,7 @@ function buildConnectionOverview(index) {
     nodeIds.add(edge.target);
   }
   for (const node of index.nodes.values()) {
-    if (['SEL_DEVICE', 'IGNITION_DEVICE'].includes(node.kind)) nodeIds.add(node.id);
+    if (['SOURCE_DEVICE', 'IGNITION_DEVICE'].includes(node.kind)) nodeIds.add(node.id);
   }
   return { nodeIds: [...nodeIds].slice(0, 300), edgeIds };
 }

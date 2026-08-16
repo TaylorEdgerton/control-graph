@@ -5,7 +5,7 @@ build-backend = "setuptools.build_meta"
 [project]
 name = "controlgraph"
 version = "0.1.0"
-description = "Local SEL RTAC to Ignition lineage proof of concept"
+description = "Local source-device to Ignition lineage proof of concept"
 requires-python = ">=3.10"
 dependencies = [
   "anyio==4.4.0",

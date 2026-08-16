@@ -29,13 +29,13 @@ REFERENCE_KEYS = (
 )
 
 
-def parse_sel(path: str | Path) -> ControlGraph:
+def parse_source(path: str | Path) -> ControlGraph:
     source = Path(path)
     graph = ControlGraph()
     try:
         root = ET.parse(source).getroot()
     except ET.ParseError as exc:
-        raise ValueError(f"The SEL XML is not valid: {exc}") from exc
+        raise ValueError(f"The source XML is not valid: {exc}") from exc
 
     element_nodes: dict[int, str] = {}
     records: list[tuple[ET.Element, str, dict[str, str], str, str | None, str | None]] = []
@@ -65,7 +65,7 @@ def parse_sel(path: str | Path) -> ControlGraph:
                 if identity:
                     attributes["identity"] = identity
                 attributes["direction"] = _direction(props, local)
-            node = ControlNode(node_id, kind, name, "SEL", attributes, [evidence])
+            node = ControlNode(node_id, kind, name, "SOURCE", attributes, [evidence])
             graph.add_node(node)
             element_nodes[id(element)] = node_id
             names[name.casefold()].append(node_id)
@@ -73,7 +73,7 @@ def parse_sel(path: str | Path) -> ControlGraph:
                 if props.get(key):
                     names[props[key].casefold()].append(node_id)
 
-            if kind == "SEL_DEVICE":
+            if kind == "SOURCE_DEVICE":
                 device_id = node_id
                 context["device"] = name
             elif kind == "IEC_LOGIC":
@@ -120,12 +120,12 @@ def _connect_point(
     refs = _references(props)
     for ref in refs:
         for target in names.get(ref.casefold(), []):
-            if target == point_id or graph.nodes[target].kind not in {"RTAC_TAG", "IEC_VARIABLE"}:
+            if target == point_id or graph.nodes[target].kind not in {"SOURCE_TAG", "IEC_VARIABLE"}:
                 continue
             if direction in {"out", "write", "server"}:
                 graph.add_edge(target, point_id, "maps_to_outbound_point", evidence=[evidence])
             else:
-                graph.add_edge(point_id, target, "maps_to_rtac_tag", evidence=[evidence])
+                graph.add_edge(point_id, target, "maps_to_source_tag", evidence=[evidence])
 
 
 def _connect_mapping(
@@ -195,9 +195,9 @@ def _classify(local: str, props: dict[str, str]) -> str | None:
     if "variable" in key or key in {"var", "inputvar", "outputvar", "localvar"}:
         return "IEC_VARIABLE"
     if ("tag" in key and key not in {"tags", "taglist", "tagdatabase"}) or key in {"globalvar", "globalvariable"}:
-        return "RTAC_TAG"
+        return "SOURCE_TAG"
     if any(term in key for term in DEVICE_TERMS) and key not in {"devices", "connections", "clients", "servers"}:
-        return "SEL_DEVICE"
+        return "SOURCE_DEVICE"
     if any(term in key for term in MAP_TERMS):
         return "MAPPING"
     return None

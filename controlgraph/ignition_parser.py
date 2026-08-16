@@ -124,23 +124,44 @@ def parse_ignition(
 
     definitions: dict[str, tuple[dict[str, Any], str, str, str, str]] = {}
     for tag, provider, display, location, path_prefix, definition_resource in tag_roots:
-        if _tag_kind(tag, definition_resource) == "definition":
-            for key in (_text(tag, "typeId"), _text(tag, "name")):
+        for definition, definition_location, definition_prefix in _definition_tags(
+            tag,
+            location,
+            path_prefix,
+            provider,
+            definition_resource,
+        ):
+            for key in (_text(definition, "typeId"), _text(definition, "name")):
                 if key:
-                    definitions[_type_key(key)] = (tag, provider, display, location, path_prefix)
-            _add_definition(graph, tag, provider, display, location, path_prefix)
+                    definitions[_type_key(key)] = (
+                        definition,
+                        provider,
+                        display,
+                        definition_location,
+                        definition_prefix,
+                    )
+            _add_definition(
+                graph,
+                definition,
+                provider,
+                display,
+                definition_location,
+                definition_prefix,
+            )
 
     for tag, provider, display, location, path_prefix, definition_resource in tag_roots:
-        kind = _tag_kind(tag, definition_resource)
-        if kind == "definition":
-            continue
-        if kind == "instance":
-            _add_instance(graph, tag, provider, display, location, path_prefix, definitions, devices)
-        else:
-            _add_atomic_tree(
-                graph, tag, provider, display, location, devices,
-                parent_id=None, path_prefix=path_prefix,
-            )
+        _add_tag_tree(
+            graph,
+            tag,
+            provider,
+            display,
+            location,
+            devices,
+            definitions,
+            parent_id=None,
+            path_prefix=path_prefix,
+            definition_resource=definition_resource,
+        )
     return graph
 
 
@@ -698,6 +719,7 @@ def _add_atomic_tree(
     display: str,
     location: str,
     devices: dict[str, tuple[str, dict[str, Any]]],
+    definitions: dict[str, tuple[dict[str, Any], str, str, str, str]],
     parent_id: str | None,
     path_prefix: str,
 ) -> None:
@@ -712,16 +734,62 @@ def _add_atomic_tree(
         graph.add_edge(parent_id, tag_id, "contains", evidence=evidence)
     _add_source(graph, tag, display, location, devices, tag_id, tag_id, evidence)
     for position, child in enumerate(_children(tag)):
-        _add_atomic_tree(
+        _add_tag_tree(
             graph,
             child,
             provider,
             display,
             f"{location}/tags/{position}",
             devices,
-            tag_id,
-            tag_path,
+            definitions,
+            parent_id=tag_id,
+            path_prefix=tag_path,
         )
+
+
+def _add_tag_tree(
+    graph: ControlGraph,
+    tag: dict[str, Any],
+    provider: str,
+    display: str,
+    location: str,
+    devices: dict[str, tuple[str, dict[str, Any]]],
+    definitions: dict[str, tuple[dict[str, Any], str, str, str, str]],
+    *,
+    parent_id: str | None,
+    path_prefix: str,
+    definition_resource: bool = False,
+) -> None:
+    kind = _tag_kind(tag, definition_resource)
+    if kind == "definition" or _is_definition_folder(tag):
+        return
+    if kind == "instance":
+        _add_instance(
+            graph,
+            tag,
+            provider,
+            display,
+            location,
+            path_prefix,
+            definitions,
+            devices,
+        )
+        instance_path = _join_tag_path(path_prefix or f"[{provider}]", _text(tag, "name"))
+        instance_id = stable_id("udt_instance", display, location, instance_path)
+        if parent_id and instance_id in graph.nodes:
+            graph.add_edge(parent_id, instance_id, "contains", evidence=graph.nodes[instance_id].evidence)
+        return
+    _add_atomic_tree(
+        graph,
+        tag,
+        provider,
+        display,
+        location,
+        devices,
+        definitions,
+        parent_id,
+        path_prefix,
+    )
 
 
 def _add_source(
@@ -752,6 +820,27 @@ def _add_source(
     unresolved_parameters = sorted(set(re.findall(r"\{([^{}]+)}", item_path)), key=str.casefold)
     if unresolved_parameters:
         attrs["unresolvedParameters"] = unresolved_parameters
+        message = f"The OPC item path has unresolved parameters: {', '.join(unresolved_parameters)}"
+        issue_id = stable_id("mapping_issue", target_id, item_path, message)
+        graph.add_node(
+            ControlNode(
+                issue_id,
+                "MAPPING_ISSUE",
+                message,
+                "IGNITION",
+                {
+                    "status": "unresolved",
+                    "subject": target_id,
+                    "opcItemPathTemplate": template_path or item_path,
+                    "candidatePath": item_path,
+                    "parameters": unresolved_parameters,
+                    "resolvedParameters": copy.deepcopy(parameters or {}),
+                },
+                evidence,
+            )
+        )
+        graph.add_edge(target_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
+        return
     server = _text(tag, "opcServer", "opcServerName")
     if server:
         attrs["opcServer"] = server
@@ -773,24 +862,6 @@ def _add_source(
     if device_record:
         graph.add_edge(device_record[0], source_id, "provides", evidence=evidence)
     graph.add_edge(source_id, target_id, "drives", evidence=evidence)
-    if unresolved_parameters:
-        message = f"The OPC item path has unresolved parameters: {', '.join(unresolved_parameters)}"
-        issue_id = stable_id("mapping_issue", source_id, message)
-        graph.add_node(
-            ControlNode(
-                issue_id,
-                "MAPPING_ISSUE",
-                message,
-                "IGNITION",
-                {
-                    "status": "unresolved",
-                    "subject": source_id,
-                    "parameters": unresolved_parameters,
-                },
-                evidence,
-            )
-        )
-        graph.add_edge(source_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
 
 
 def _match_configured_device(
@@ -884,6 +955,33 @@ def _tag_roots(data: Any) -> list[tuple[dict[str, Any], str]]:
     return result
 
 
+def _definition_tags(
+    tag: dict[str, Any],
+    location: str,
+    path_prefix: str,
+    provider: str,
+    definition_resource: bool = False,
+) -> Iterator[tuple[dict[str, Any], str, str]]:
+    if _tag_kind(tag, definition_resource) == "definition":
+        yield tag, location, path_prefix
+        return
+    name = _text(tag, "name")
+    child_prefix = _join_tag_path(path_prefix or f"[{provider}]", name) if name else path_prefix
+    child_definition_resource = definition_resource or _is_definition_folder(tag)
+    for position, child in enumerate(_children(tag)):
+        yield from _definition_tags(
+            child,
+            f"{location}/tags/{position}",
+            child_prefix,
+            provider,
+            child_definition_resource,
+        )
+
+
+def _is_definition_folder(tag: dict[str, Any]) -> bool:
+    return _text(tag, "name").strip("/ ").casefold() == "_types_"
+
+
 def _walk_objects(data: Any) -> Iterator[tuple[dict[str, Any], str]]:
     def walk(value: Any, location: str) -> Iterator[tuple[dict[str, Any], str]]:
         if isinstance(value, dict):
@@ -903,9 +1001,9 @@ def _is_tag(value: dict[str, Any]) -> bool:
 
 
 def _tag_kind(tag: dict[str, Any], definition_resource: bool = False) -> str:
-    if definition_resource:
-        return "definition"
     tag_type = _text(tag, "tagType", "type").lower().replace(" ", "")
+    if definition_resource and tag_type != "folder":
+        return "definition"
     type_id = _text(tag, "typeId")
     if tag_type in {"udttype", "datatype", "definition"} or _bool(tag, "isUdtDefinition"):
         return "definition"
@@ -928,7 +1026,8 @@ def _parameters(tag: dict[str, Any]) -> dict[str, Any]:
     result: dict[str, Any] = {}
     for key, value in tag.items():
         if clean_key(key) not in {
-            "parameters", "parametervalues", "parameteroverrides", "params",
+            "parameters", "parameterbindings", "parameterdefinitions",
+            "parametervalues", "paramvalues", "parameteroverrides", "params",
         }:
             continue
         if isinstance(value, dict):
@@ -946,12 +1045,19 @@ def _parameters(tag: dict[str, Any]) -> dict[str, Any]:
 
 def _parameter_value(value: Any) -> Any:
     if isinstance(value, dict):
+        binding_type = _raw_text(value, "bindType", "bindingType", "type").casefold()
         for wanted in ("value", "binding"):
             for key, item in value.items():
                 if clean_key(key) == wanted:
-                    return _parameter_value(item)
+                    resolved = _parameter_value(item)
+                    if wanted == "binding" and "parameter" in binding_type:
+                        return _parameter_expression(resolved)
+                    return resolved
     if isinstance(value, str):
-        return _serialized_binding(value) or value
+        binding = _serialized_binding(value)
+        if binding:
+            return _parameter_expression(binding) if _is_serialized_parameter_binding(value) else binding
+        return value
     return copy.deepcopy(value)
 
 
@@ -985,7 +1091,7 @@ def _substitute(value: Any, parameters: dict[str, Any]) -> Any:
     if isinstance(value, str):
         def replace(match: re.Match[str]) -> str:
             key = match.group(1)
-            found = next((item for name, item in parameters.items() if name.casefold() == key.casefold()), match.group(0))
+            found = _parameter_lookup(parameters, key, match.group(0))
             return str(found)
         return re.sub(r"\{([^{}]+)}", replace, value)
     if isinstance(value, list):
@@ -993,6 +1099,25 @@ def _substitute(value: Any, parameters: dict[str, Any]) -> Any:
     if isinstance(value, dict):
         return {key: _substitute(item, parameters) for key, item in value.items()}
     return value
+
+
+def _parameter_lookup(parameters: dict[str, Any], name: str, fallback: Any) -> Any:
+    wanted = clean_key(name)
+    return next(
+        (value for key, value in parameters.items() if clean_key(key) == wanted),
+        fallback,
+    )
+
+
+def _parameter_expression(value: Any) -> Any:
+    if not isinstance(value, str):
+        return value
+    text = value.strip()
+    if not text or re.search(r"\{[^{}]+}", text):
+        return text
+    if re.fullmatch(r"[A-Za-z_][A-Za-z0-9_. -]*", text):
+        return "{" + text + "}"
+    return text
 
 
 def _deep_merge(base: dict[str, Any], override: dict[str, Any]) -> dict[str, Any]:
@@ -1083,6 +1208,23 @@ def _text(value: dict[str, Any], *keys: str) -> str:
                         text = str(nested_value).strip()
                         return _serialized_binding(text) or text
     return ""
+
+
+def _raw_text(value: dict[str, Any], *keys: str) -> str:
+    wanted = {clean_key(key) for key in keys}
+    for key, item in value.items():
+        if clean_key(key) in wanted and isinstance(item, (str, int, float)):
+            return str(item).strip()
+    return ""
+
+
+def _is_serialized_parameter_binding(value: str) -> bool:
+    match = re.search(
+        r"(?:bind\s*type|bindtype)\s*[:=]\s*[\"']?([^,}\"']+)",
+        value,
+        re.I,
+    )
+    return bool(match and "parameter" in match.group(1).casefold())
 
 
 def _serialized_binding(value: str) -> str:

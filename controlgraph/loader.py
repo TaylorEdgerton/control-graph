@@ -5,18 +5,18 @@ from pathlib import Path
 from .ignition_parser import parse_ignition
 from .model import ControlGraph
 from .resolver import resolve
-from .sel_parser import parse_sel
+from .source_parser import parse_source
 
 
 def load_sources(
-    sel_path: str | Path | None = None,
+    source_path: str | Path | None = None,
     ignition_path: str | Path | None = None,
 ) -> tuple[ControlGraph, ControlGraph]:
-    sel_graph = parse_sel(sel_path) if sel_path else ControlGraph()
+    source_graph = parse_source(source_path) if source_path else ControlGraph()
     ignition_graph = parse_ignition(ignition_path) if ignition_path else ControlGraph()
-    return sel_graph, ignition_graph
+    return source_graph, ignition_graph
 
 
-def build_graph(sel_path: str | Path, ignition_path: str | Path) -> ControlGraph:
-    sel_graph, ignition_graph = load_sources(sel_path, ignition_path)
-    return resolve(sel_graph, ignition_graph)
+def build_graph(source_path: str | Path, ignition_path: str | Path) -> ControlGraph:
+    source_graph, ignition_graph = load_sources(source_path, ignition_path)
+    return resolve(source_graph, ignition_graph)

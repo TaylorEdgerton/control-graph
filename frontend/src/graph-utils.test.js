@@ -38,7 +38,7 @@ test('Ignition provider and folder segments are parsed separately', () => {
 test('no canvas selection shows the root connection overview', () => {
   const model = {
     nodes: [
-      { id: 'source', name: 'RTAC Link', kind: 'SEL_DEVICE', system: 'SEL', attributes: {} },
+      { id: 'source', name: 'Controller Link', kind: 'SOURCE_DEVICE', system: 'SOURCE', attributes: {} },
       { id: 'target', name: 'DNP Connection', kind: 'IGNITION_DEVICE', system: 'IGNITION', attributes: {} },
     ],
     edges: [{

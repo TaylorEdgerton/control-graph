@@ -104,16 +104,16 @@ def create_app(
     graph: ControlGraph,
     *,
     serve_static: bool = True,
-    sel_graph: ControlGraph | None = None,
+    source_graph: ControlGraph | None = None,
     ignition_graph: ControlGraph | None = None,
 ) -> FastAPI:
     app = FastAPI(
         title="ControlGraph API",
         version="0.1.0",
-        description="Inspect the resolved lineage between an SEL RTAC project and Ignition tags.",
+        description="Inspect the resolved lineage between a source-device project and Ignition tags.",
         contact={"name": "Local ControlGraph PoC"},
     )
-    workspace = AnalysisWorkspace(graph, sel_graph=sel_graph, ignition_graph=ignition_graph)
+    workspace = AnalysisWorkspace(graph, source_graph=source_graph, ignition_graph=ignition_graph)
     app.state.workspace = workspace
     app.add_event_handler("shutdown", workspace.close)
 
@@ -266,7 +266,7 @@ def serve(
     port: int = 8765,
     *,
     serve_static: bool = True,
-    sel_graph: ControlGraph | None = None,
+    source_graph: ControlGraph | None = None,
     ignition_graph: ControlGraph | None = None,
 ) -> None:
     print(f"ControlGraph is ready at http://{host}:{port}")
@@ -275,7 +275,7 @@ def serve(
         create_app(
             graph,
             serve_static=serve_static,
-            sel_graph=sel_graph,
+            source_graph=source_graph,
             ignition_graph=ignition_graph,
         ),
         host=host,

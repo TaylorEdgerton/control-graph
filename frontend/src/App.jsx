@@ -39,7 +39,7 @@ export default function App() {
       .then((data) => {
         setModel(data);
         const first = data.nodes.find((node) => node.name === 'Relay_A')
-          || data.nodes.find((node) => node.kind === 'SEL_DEVICE')
+          || data.nodes.find((node) => node.kind === 'SOURCE_DEVICE')
           || data.nodes[0];
         setSelectedId(first?.id || null);
       })
@@ -127,7 +127,7 @@ export default function App() {
     setModel(nextModel);
     setSelectedId((current) => {
       if (nextModel.nodes.some((node) => node.id === current)) return current;
-      return nextModel.nodes.find((node) => node.kind === 'SEL_DEVICE')?.id
+      return nextModel.nodes.find((node) => node.kind === 'SOURCE_DEVICE')?.id
         || nextModel.nodes[0]?.id
         || null;
     });

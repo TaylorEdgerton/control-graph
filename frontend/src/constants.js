@@ -1,9 +1,9 @@
 import { darkTokens } from './theme-tokens.js';
 
 export const KIND_LABELS = {
-  SEL_DEVICE: 'SEL device',
+  SOURCE_DEVICE: 'Source device',
   PROTOCOL_POINT: 'Protocol point',
-  RTAC_TAG: 'RTAC tag',
+  SOURCE_TAG: 'Source tag',
   IEC_VARIABLE: 'IEC variable',
   IEC_LOGIC: 'IEC logic',
   IGNITION_DEVICE: 'Connection device',
@@ -16,21 +16,21 @@ export const KIND_LABELS = {
 };
 
 export const SYSTEM_COLORS = {
-  SEL: darkTokens.accent.blue,
+  SOURCE: darkTokens.accent.blue,
   IGNITION: darkTokens.accent.teal,
   RESOLVER: darkTokens.accent.orange,
 };
 
 export const SYSTEM_FILTERS = [
-  { label: 'SEL RTAC', value: 'SEL' },
+  { label: 'Source project', value: 'SOURCE' },
   { label: 'Ignition', value: 'IGNITION' },
   { label: 'Resolver issues', value: 'RESOLVER' },
 ];
 
 export const TYPE_FILTERS = [
-  { label: 'Device', kinds: ['SEL_DEVICE', 'IGNITION_DEVICE'] },
+  { label: 'Device', kinds: ['SOURCE_DEVICE', 'IGNITION_DEVICE'] },
   { label: 'Protocol point', kinds: ['PROTOCOL_POINT', 'OPC_ITEM'] },
-  { label: 'Tag', kinds: ['RTAC_TAG', 'IGNITION_TAG'] },
+  { label: 'Tag', kinds: ['SOURCE_TAG', 'IGNITION_TAG'] },
   { label: 'Logic', kinds: ['IEC_VARIABLE', 'IEC_LOGIC'] },
   { label: 'UDT', kinds: ['UDT_DEFINITION', 'UDT_INSTANCE', 'UDT_MEMBER'] },
   { label: 'Issue', kinds: ['MAPPING_ISSUE'] },
