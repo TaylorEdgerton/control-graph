@@ -160,6 +160,17 @@ class ControlGraphTests(unittest.TestCase):
         self.assertFalse(any("_types_" in tag.name for tag in tags))
         self.assertFalse(any("{" in source.name or "}" in source.name for source in sources))
 
+    def test_child_udt_instance_inherits_parent_instance_parameters(self) -> None:
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_child_udt_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        instances = [node for node in graph.nodes.values() if node.kind == "UDT_INSTANCE"]
+        source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
+        self.assertEqual(len(instances), 2)
+        self.assertEqual(source.name, "RTAC_A.Binary Input 12")
+        self.assertFalse(any("{" in node.name or "}" in node.name for node in graph.nodes.values()))
+
     def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
             backup = create_unresolved_parameter_backup(Path(temp))
@@ -500,6 +511,70 @@ def create_unresolved_parameter_backup(root: Path) -> Path:
         archive.writestr(
             "config/resources/core/ignition/tag-definition/default/Area/tags.json",
             json.dumps(instance),
+        )
+    return backup
+
+
+def create_child_udt_backup(root: Path) -> Path:
+    point_definition = {
+        "name": "PointType",
+        "parameters": {
+            "Device": "Default Device",
+            "Point": "Binary Input 0",
+        },
+        "tags": [{
+            "name": "Value",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcItemPath": "{Device}.{Point}",
+        }],
+    }
+    assembly_definition = {
+        "name": "AssemblyType",
+        "parameters": {
+            "Connection": "Default Device",
+            "ControlTag": "Binary Input 0",
+        },
+        "tags": [{
+            "name": "PointInstance",
+            "tagType": "UdtInstance",
+            "typeId": "PointType",
+            "parameterBindings": {
+                "Device": {"bindType": "parameter", "binding": "Connection"},
+                "Point": {"bindType": "parameter", "binding": "ControlTag"},
+            },
+        }],
+    }
+    instance = [{
+        "name": "Assembly_1",
+        "tagType": "UdtInstance",
+        "typeId": "AssemblyType",
+        "paramValues": {
+            "Connection": "RTAC_A",
+            "ControlTag": "Binary Input 12",
+        },
+    }]
+    backup = root / "child-udt.gwbk"
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json",
+            json.dumps([point_definition, assembly_definition]),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json",
+            json.dumps(instance),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/device/RTAC_A/config.json",
+            json.dumps({
+                "type": "DNP3",
+                "hostname": "10.20.1.20",
+                "destinationAddress": 1,
+            }),
         )
     return backup
 

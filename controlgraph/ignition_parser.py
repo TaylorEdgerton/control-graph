@@ -131,15 +131,15 @@ def parse_ignition(
             provider,
             definition_resource,
         ):
-            for key in (_text(definition, "typeId"), _text(definition, "name")):
-                if key:
-                    definitions[_type_key(key)] = (
-                        definition,
-                        provider,
-                        display,
-                        definition_location,
-                        definition_prefix,
-                    )
+            definition_name = _text(definition, "name")
+            if definition_name:
+                definitions[_type_key(definition_name)] = (
+                    definition,
+                    provider,
+                    display,
+                    definition_location,
+                    definition_prefix,
+                )
             _add_definition(
                 graph,
                 definition,
@@ -633,9 +633,11 @@ def _add_instance(
             display,
             member_location,
             devices,
+            definitions,
             instance_id,
             instance_path,
             parameters,
+            definition_stack=(_type_key(type_id),),
             definition_evidence=Evidence(def_display, f"{def_location}/tags/{position}", _json_detail(member)),
             instance_evidence=evidence,
         )
@@ -648,29 +650,94 @@ def _add_resolved_member(
     display: str,
     location: str,
     devices: dict[str, tuple[str, dict[str, Any]]],
+    definitions: dict[str, tuple[dict[str, Any], str, str, str, str]],
     parent_id: str,
     path_prefix: str,
     parameters: dict[str, Any],
     *,
+    definition_stack: tuple[str, ...],
     definition_evidence: Evidence,
     instance_evidence: Evidence,
 ) -> None:
     template_tag = tag
-    parameters = _resolved_parameters(parameters, _parameters(template_tag))
+    nested_type_id = _text(template_tag, "typeId")
+    nested_type_key = _type_key(nested_type_id)
+    nested_definition_record = definitions.get(nested_type_key) if nested_type_id else None
+    if nested_definition_record:
+        nested_definition = nested_definition_record[0]
+        parameters = _resolved_parameters(
+            _parameters(nested_definition),
+            parameters,
+            _parameters(template_tag),
+        )
+    else:
+        parameters = _resolved_parameters(parameters, _parameters(template_tag))
     tag = _substitute(template_tag, parameters)
     name = _text(tag, "name")
     if not name:
         return
     tag_path = _join_tag_path(path_prefix, name)
     evidence = [definition_evidence, instance_evidence]
-    member_id = stable_id("udt_member", display, location, tag_path)
+    member_kind = "UDT_INSTANCE" if nested_definition_record else "UDT_MEMBER"
+    member_id = stable_id(member_kind, display, location, tag_path)
     member_attributes = _scalar_values(tag)
     member_attributes["resolvedParameters"] = copy.deepcopy(parameters)
     member_attributes["isTemplate"] = False
     graph.add_node(
-        ControlNode(member_id, "UDT_MEMBER", tag_path, "IGNITION", member_attributes, evidence)
+        ControlNode(member_id, member_kind, tag_path, "IGNITION", member_attributes, evidence)
     )
     graph.add_edge(parent_id, member_id, "contains_member", evidence=evidence)
+
+    if nested_definition_record:
+        if nested_type_key in definition_stack:
+            message = f"Recursive UDT definition cannot be expanded: {nested_type_id}"
+            issue_id = stable_id("mapping_issue", member_id, message)
+            graph.add_node(ControlNode(
+                issue_id,
+                "MAPPING_ISSUE",
+                message,
+                "IGNITION",
+                {"status": "unresolved", "instance": member_id},
+                evidence,
+            ))
+            graph.add_edge(member_id, issue_id, "has_mapping_issue", status="unresolved", evidence=evidence)
+            return
+        nested_definition, nested_provider, nested_display, nested_location, nested_prefix = (
+            nested_definition_record
+        )
+        nested_definition_id = _add_definition(
+            graph,
+            nested_definition,
+            nested_provider,
+            nested_display,
+            nested_location,
+            nested_prefix,
+        )
+        graph.add_edge(nested_definition_id, member_id, "instantiates", evidence=evidence)
+        overrides = {_text(item, "name").casefold(): item for item in _children(template_tag)}
+        for position, child in enumerate(_children(nested_definition)):
+            child_name = _text(child, "name") or f"Member {position + 1}"
+            effective = _deep_merge(child, overrides.get(child_name.casefold(), {}))
+            _add_resolved_member(
+                graph,
+                effective,
+                provider,
+                display,
+                f"{location}/{child_name}",
+                devices,
+                definitions,
+                member_id,
+                tag_path,
+                parameters,
+                definition_stack=(*definition_stack, nested_type_key),
+                definition_evidence=Evidence(
+                    nested_display,
+                    f"{nested_location}/tags/{position}",
+                    _json_detail(child),
+                ),
+                instance_evidence=instance_evidence,
+            )
+        return
 
     children = _children(template_tag)
     if children:
@@ -683,9 +750,11 @@ def _add_resolved_member(
                 display,
                 f"{location}/{child_name}",
                 devices,
+                definitions,
                 member_id,
                 tag_path,
                 parameters,
+                definition_stack=definition_stack,
                 definition_evidence=definition_evidence,
                 instance_evidence=instance_evidence,
             )
