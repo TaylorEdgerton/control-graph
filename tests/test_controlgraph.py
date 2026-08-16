@@ -11,6 +11,7 @@ from unittest.mock import patch
 import zipfile
 
 from controlgraph.ignition_parser import inspect_ignition_backup, parse_ignition
+from controlgraph.identity import parse_opc_item
 from controlgraph.cli import main
 from controlgraph.loader import build_graph
 from controlgraph.model import ControlNode, stable_id
@@ -101,8 +102,12 @@ class ControlGraphTests(unittest.TestCase):
 
             tags_81 = {node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_TAG"}
             tags_83 = {node.name for node in graph_83.nodes.values() if node.kind == "IGNITION_TAG"}
+            connections_81 = {
+                node.name for node in graph_81.nodes.values() if node.kind == "IGNITION_DEVICE"
+            }
             self.assertEqual(tags_81, {"[default]testtag1", "[default]testtag2"})
             self.assertEqual(tags_83, {"[default]test"})
+            self.assertIn("CODESYS Connection", connections_81)
 
     def test_udt_instance_parameters_resolve_the_opc_item_path(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -170,6 +175,37 @@ class ControlGraphTests(unittest.TestCase):
         self.assertEqual(len(instances), 2)
         self.assertEqual(source.name, "RTAC_A.Binary Input 12")
         self.assertFalse(any("{" in node.name or "}" in node.name for node in graph.nodes.values()))
+
+    def test_codesys_namespace_node_maps_by_opc_server_not_symbol_suffix(self) -> None:
+        item_path = (
+            "nsu=CODESYSSPV3/3S/IecVarAccess;"
+            "s=|var|Logic.Application.LV_Meter_MODBUS"
+        )
+        identity = parse_opc_item(item_path, "CODESYS Connection")
+        self.assertEqual(identity["kind"], "opcua")
+        self.assertEqual(identity["namespaceUri"], "CODESYSSPV3/3S/IecVarAccess")
+        self.assertEqual(identity["identifier"], "|var|Logic.Application.LV_Meter_MODBUS")
+
+        with tempfile.TemporaryDirectory() as temp:
+            backup = create_codesys_parameter_backup(Path(temp))
+            graph = parse_ignition(backup, ["default"])
+
+        source = next(node for node in graph.nodes.values() if node.kind == "OPC_ITEM")
+        connections = {
+            node.name: node for node in graph.nodes.values() if node.kind == "IGNITION_DEVICE"
+        }
+        self.assertEqual(source.name, item_path)
+        self.assertEqual(source.attributes["configuredDevice"], "CODESYS Connection")
+        self.assertEqual(source.attributes["deviceMatch"], "OPC server")
+        self.assertEqual(source.attributes["identity"]["namespaceUri"], "CODESYSSPV3/3S/IecVarAccess")
+        self.assertTrue(any(
+            edge.source == connections["CODESYS Connection"].id and edge.target == source.id
+            for edge in graph.edges.values()
+        ))
+        self.assertFalse(any(
+            edge.source == connections["LV_Meter_MODBUS"].id and edge.target == source.id
+            for edge in graph.edges.values()
+        ))
 
     def test_unresolved_opc_template_is_an_issue_not_a_protocol_item(self) -> None:
         with tempfile.TemporaryDirectory() as temp:
@@ -349,7 +385,14 @@ def create_gateway_backups(root: Path) -> tuple[Path, Path]:
             "(ID TEXT, PROVIDERID INTEGER, FOLDERID TEXT, RANK INTEGER, NAME TEXT, CFG TEXT)"
         )
         connection.execute("CREATE TABLE SIMPLETAGPROVIDERPROFILE (PROVIDERID INTEGER, NAME TEXT)")
+        connection.execute(
+            "CREATE TABLE OPCSERVERSETTINGS (NAME TEXT, TYPE TEXT, ENDPOINTURL TEXT)"
+        )
         connection.execute("INSERT INTO SIMPLETAGPROVIDERPROFILE VALUES (1, 'System')")
+        connection.execute(
+            "INSERT INTO OPCSERVERSETTINGS VALUES "
+            "('CODESYS Connection', 'OPC UA', 'opc.tcp://codesys-controller:4840')"
+        )
         rows = [
             ("default-1", 0, None, 0, "testtag1"),
             ("default-2", 0, None, 1, "testtag2"),
@@ -574,6 +617,61 @@ def create_child_udt_backup(root: Path) -> Path:
                 "type": "DNP3",
                 "hostname": "10.20.1.20",
                 "destinationAddress": 1,
+            }),
+        )
+    return backup
+
+
+def create_codesys_parameter_backup(root: Path) -> Path:
+    definition = [{
+        "name": "CodesysPoint",
+        "parameters": {
+            "OPC Connection String": "nsu=CODESYSSPV3/3S/IecVarAccess;s=|var|Logic.Application",
+            "RTAC Device": ".LV_Meter_MODBUS",
+        },
+        "tags": [{
+            "name": "Value",
+            "tagType": "AtomicTag",
+            "valueSource": "opc",
+            "opcServer": "CODESYS Connection",
+            "opcItemPath": "{OPC Connection String}{RTAC Device}",
+        }],
+    }]
+    instance = [{
+        "name": "Meter_1",
+        "tagType": "UdtInstance",
+        "typeId": "CodesysPoint",
+    }]
+    backup = root / "codesys-parameter.gwbk"
+    with zipfile.ZipFile(backup, "w") as archive:
+        archive.writestr(
+            "backupinfo.xml",
+            "<backup><version>8.3.6.2026042713</version><backup-type>ALL</backup-type></backup>",
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-type-definition/default/Types/udts.json",
+            json.dumps(definition),
+        )
+        archive.writestr(
+            "config/resources/core/ignition/tag-definition/default/Area/tags.json",
+            json.dumps(instance),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/client-connection/"
+            "CODESYS Connection/config.json",
+            json.dumps({
+                "name": "CODESYS Connection",
+                "type": "OPC UA",
+                "endpointUrl": "opc.tcp://codesys-controller:4840",
+            }),
+        )
+        archive.writestr(
+            "config/resources/core/com.inductiveautomation.opcua/device/"
+            "LV_Meter_MODBUS/config.json",
+            json.dumps({
+                "type": "Modbus TCP",
+                "hostname": "10.20.1.30",
+                "unitId": 1,
             }),
         )
     return backup

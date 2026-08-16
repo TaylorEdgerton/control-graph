@@ -5,7 +5,10 @@ from typing import Any, Mapping
 
 
 ALIASES = {
-    "host": ("host", "hostname", "ip", "ipaddress", "endpoint", "serverurl"),
+    "host": (
+        "host", "hostname", "ip", "ipaddress", "endpoint", "endpointurl",
+        "discoveryurl", "serverurl",
+    ),
     "device": ("device", "devicename", "connection", "channel"),
     "unit": (
         "unit", "unitid", "slave", "slaveid", "station", "outstation", "outstationid",
@@ -48,10 +51,34 @@ def parse_opc_item(item: str, server: str = "", device_hint: str = "") -> dict[s
     if match:
         device, body = match.groups()
 
-    node_match = re.search(r"(?:^|[;,])\s*ns\s*=\s*\d+\s*[;,]\s*[isgb]\s*=.+", body, re.I)
-    if node_match or re.search(r"\bnodeid\s*=", body, re.I):
+    expanded_node = re.match(
+        r"^\s*(?:(ns)\s*=\s*(\d+)|(nsu)\s*=\s*([^;]+))\s*;\s*([isgb])\s*=\s*(.+)$",
+        body,
+        re.I,
+    )
+    if expanded_node:
+        namespace_kind, namespace_index, uri_kind, namespace_uri, identifier_type, identifier = (
+            expanded_node.groups()
+        )
+        identity = compact({
+            "kind": "opcua",
+            "server": server,
+            "device": device,
+        })
+        identity["nodeid"] = body.strip()
+        identity["identifierType"] = identifier_type.lower()
+        identity["identifier"] = identifier.strip()
+        if namespace_kind:
+            identity["namespaceIndex"] = namespace_index
+        if uri_kind:
+            identity["namespaceUri"] = namespace_uri.strip()
+        return identity
+
+    if re.search(r"\bnodeid\s*=", body, re.I):
         nodeid = re.sub(r"^.*?nodeid\s*=\s*", "", body, flags=re.I).strip()
-        return compact({"kind": "opcua", "server": server, "device": device, "nodeid": nodeid})
+        identity = compact({"kind": "opcua", "server": server, "device": device})
+        identity["nodeid"] = nodeid
+        return identity
 
     dnp = re.search(
         r"(?:dnp3?\s*)?(binary|analog|counter|octet|string)\s*(input|output)?\s*[:/_ -]*([0-9]+)$",

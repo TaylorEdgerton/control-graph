@@ -99,7 +99,7 @@ def parse_ignition(
             devices = _read_sqlite_devices(root, source, graph)
         elif configuration_format == "json":
             tag_documents = _read_json_documents(root, source, _is_tag_resource_path)
-            device_documents = _read_83_device_documents(root, source)
+            device_documents = _read_83_connection_documents(root, source)
             devices = _find_devices(device_documents, graph)
         else:
             tag_documents = _read_json_documents(root, source)
@@ -436,38 +436,74 @@ def _read_sqlite_devices(
     devices: dict[str, tuple[str, dict[str, Any]]] = {}
     with sqlite3.connect(database) as connection:
         connection.row_factory = sqlite3.Row
-        if not _sqlite_has_table(connection, "DEVICESETTINGS"):
-            return devices
-        settings_by_id: dict[int, dict[str, Any]] = {}
-        for table in _sqlite_table_names(connection):
-            upper = table.upper()
-            if upper == "DEVICESETTINGS" or not upper.endswith(("DEVICESETTINGS", "DRIVERSETTINGS")):
-                continue
-            identifier = _sqlite_identifier(table)
-            columns = [str(row[1]).upper() for row in connection.execute(f"PRAGMA table_info({identifier})")]
-            if "DEVICESETTINGSID" not in columns:
-                continue
-            for row in connection.execute(f"SELECT * FROM {identifier}"):
-                values = _safe_database_values(dict(row))
-                device_id = int(values.pop("DEVICESETTINGSID"))
-                settings_by_id.setdefault(device_id, {}).update(values)
-
         display = f"{archive}!{database.relative_to(root).as_posix()}" if archive.is_file() else str(database)
-        for row in connection.execute("SELECT * FROM DEVICESETTINGS ORDER BY NAME"):
-            values = _safe_database_values(dict(row))
-            device_id = int(values.pop("DEVICESETTINGS_ID"))
-            name = str(values.get("NAME") or f"Device {device_id}")
-            attrs = {**values, **settings_by_id.get(device_id, {})}
-            attrs["deviceName"] = name
-            attrs["protocol"] = str(attrs.get("TYPE") or "")
-            identity = infer_identity(attrs)
-            if identity:
-                attrs["identity"] = identity
-            evidence = Evidence(display, f"DEVICESETTINGS/{device_id}", _json_detail(attrs))
-            node_id = stable_id("ignition_device", display, device_id, name)
-            graph.add_node(ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, [evidence]))
-            devices[name.casefold()] = (node_id, attrs)
+        settings_by_id: dict[int, dict[str, Any]] = {}
+        if _sqlite_has_table(connection, "DEVICESETTINGS"):
+            for table in _sqlite_table_names(connection):
+                upper = table.upper()
+                if upper == "DEVICESETTINGS" or not upper.endswith(("DEVICESETTINGS", "DRIVERSETTINGS")):
+                    continue
+                identifier = _sqlite_identifier(table)
+                columns = [str(row[1]).upper() for row in connection.execute(f"PRAGMA table_info({identifier})")]
+                if "DEVICESETTINGSID" not in columns:
+                    continue
+                for row in connection.execute(f"SELECT * FROM {identifier}"):
+                    values = _safe_database_values(dict(row))
+                    device_id = int(values.pop("DEVICESETTINGSID"))
+                    settings_by_id.setdefault(device_id, {}).update(values)
+
+            for row in connection.execute("SELECT * FROM DEVICESETTINGS ORDER BY NAME"):
+                values = _safe_database_values(dict(row))
+                device_id = int(values.pop("DEVICESETTINGS_ID"))
+                name = str(values.get("NAME") or f"Device {device_id}")
+                attrs = {**values, **settings_by_id.get(device_id, {})}
+                attrs["deviceName"] = name
+                attrs["protocol"] = str(attrs.get("TYPE") or "")
+                identity = infer_identity(attrs)
+                if identity:
+                    attrs["identity"] = identity
+                evidence = Evidence(display, f"DEVICESETTINGS/{device_id}", _json_detail(attrs))
+                node_id = stable_id("ignition_device", display, device_id, name)
+                graph.add_node(ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, [evidence]))
+                devices[name.casefold()] = (node_id, attrs)
+        _read_sqlite_opc_connections(connection, display, graph, devices)
     return devices
+
+
+def _read_sqlite_opc_connections(
+    connection: sqlite3.Connection,
+    display: str,
+    graph: ControlGraph,
+    devices: dict[str, tuple[str, dict[str, Any]]],
+) -> None:
+    for table in _sqlite_table_names(connection):
+        normalized_table = clean_key(table)
+        if "opc" not in normalized_table or "settings" not in normalized_table:
+            continue
+        if not any(term in normalized_table for term in ("server", "connection", "client")):
+            continue
+        identifier = _sqlite_identifier(table)
+        for position, row in enumerate(connection.execute(f"SELECT * FROM {identifier}")):
+            attrs = _safe_database_values(dict(row))
+            name = _text(attrs, "name", "serverName", "connectionName", "profileName")
+            if not name:
+                continue
+            attrs["deviceName"] = name
+            attrs["connectionName"] = name
+            attrs["connectionKind"] = "opc-client"
+            attrs["protocol"] = _text(attrs, "type", "connectionType", "serverType") or "OPC UA"
+            evidence = Evidence(display, f"{table}/{position}", _json_detail(attrs))
+            existing = devices.get(name.casefold())
+            if existing:
+                existing[1].update(attrs)
+                graph.nodes[existing[0]].attributes.update(attrs)
+                graph.nodes[existing[0]].evidence.append(evidence)
+                continue
+            node_id = stable_id("ignition_connection", display, table, name)
+            graph.add_node(
+                ControlNode(node_id, "IGNITION_DEVICE", name, "IGNITION", attrs, [evidence])
+            )
+            devices[name.casefold()] = (node_id, attrs)
 
 
 def _safe_database_values(values: dict[str, Any]) -> dict[str, Any]:
@@ -494,21 +530,34 @@ def _sqlite_has_table(connection: sqlite3.Connection, name: str) -> bool:
     ).fetchone() is not None
 
 
-def _read_83_device_documents(root: Path, archive: Path) -> list[tuple[str, str, Any]]:
+def _read_83_connection_documents(root: Path, archive: Path) -> list[tuple[str, str, Any]]:
     result: list[tuple[str, str, Any]] = []
-    marker = re.compile(r"(?:^|/)com\.inductiveautomation\.opcua/device/([^/]+)/config\.json$", re.I)
+    device_marker = re.compile(
+        r"(?:^|/)com\.inductiveautomation\.opcua/device/([^/]+)/config\.json$",
+        re.I,
+    )
     for file in sorted(root.rglob("config.json")):
         rel = file.relative_to(root).as_posix()
-        match = marker.search(rel)
-        if not match or file.stat().st_size > 20_000_000:
+        device_match = device_marker.search(rel)
+        normalized = rel.casefold()
+        is_opc_connection = "opc" in normalized and any(
+            term in normalized for term in ("connection", "client", "server")
+        )
+        if (not device_match and not is_opc_connection) or file.stat().st_size > 20_000_000:
             continue
         try:
             data = json.loads(file.read_text(encoding="utf-8-sig"))
         except (UnicodeDecodeError, json.JSONDecodeError, OSError):
             continue
-        attrs: dict[str, Any] = {"name": match.group(1)}
+        resource_name = device_match.group(1) if device_match else PurePosixPath(rel).parent.name
+        attrs: dict[str, Any] = {"name": resource_name}
         _flatten_config(data, attrs)
-        attrs["deviceName"] = match.group(1)
+        attrs = _safe_database_values(attrs)
+        attrs["deviceName"] = resource_name
+        attrs["connectionName"] = str(
+            attrs.get("connectionName") or attrs.get("serverName") or attrs.get("name") or resource_name
+        )
+        attrs["connectionKind"] = "native-device" if device_match else "opc-client"
         attrs["protocol"] = str(attrs.get("type") or attrs.get("protocol") or "")
         display = f"{archive}!{rel}" if archive.is_file() else str(file)
         result.append((rel, display, attrs))
@@ -539,7 +588,11 @@ def _find_devices(
             name = _text(obj, "name", "deviceName", "connectionName")
             flat_keys = {clean_key(key) for key in obj}
             if not name or not flat_keys.intersection(
-                {"protocol", "driver", "devicetype", "hostname", "host", "ipaddress", "opcserver", "outstationid", "unitid"}
+                {
+                    "protocol", "driver", "devicetype", "type", "connectiontype",
+                    "hostname", "host", "ipaddress", "endpoint", "endpointurl",
+                    "discoveryurl", "serverurl", "opcserver", "outstationid", "unitid",
+                }
             ):
                 continue
             attrs = _scalar_values(obj)
@@ -940,18 +993,22 @@ def _match_configured_device(
     devices: dict[str, tuple[str, dict[str, Any]]],
 ) -> tuple[str, tuple[str, dict[str, Any]] | None, str]:
     candidates: list[tuple[str, str]] = []
+    if identity.get("server"):
+        candidates.append(("OPC server", identity["server"]))
     if identity.get("device"):
         candidates.append(("OPC item device", identity["device"]))
+    external_opc_node = identity.get("kind") == "opcua" and bool(identity.get("namespaceUri"))
     parameter_items = [
         (name, str(value))
         for name, value in parameters.items()
         if isinstance(value, (str, int, float)) and value != ""
     ]
     parameter_items.sort(key=lambda item: (_device_parameter_priority(item[0]), item[0].casefold()))
-    for name, value in parameter_items:
-        if _device_parameter_priority(name) < 9:
-            candidates.append((f"parameter {name}", value))
-    candidates.append(("resolved OPC item path", item_path))
+    if not external_opc_node:
+        for name, value in parameter_items:
+            if _device_parameter_priority(name) < 9:
+                candidates.append((f"parameter {name}", value))
+        candidates.append(("resolved OPC item path", item_path))
 
     for reason, candidate in candidates:
         for key, record in devices.items():
@@ -961,7 +1018,10 @@ def _match_configured_device(
                 str(value)
                 for name, value in record[1].items()
                 if isinstance(value, (str, int, float))
-                and any(term in clean_key(name) for term in ("devicename", "connectionname", "iedname"))
+                and any(
+                    term in clean_key(name)
+                    for term in ("devicename", "connectionname", "servername", "iedname")
+                )
             )
             if any(_path_contains_name(candidate, alias) for alias in aliases if alias):
                 return display_name, record, reason
@@ -970,6 +1030,8 @@ def _match_configured_device(
 
 def _device_parameter_priority(name: str) -> int:
     key = clean_key(name)
+    if "connectionstring" in key or key.endswith(("path", "nodeid")):
+        return 9
     if key in {"device", "devicename", "rtacdevice", "opcdevice"}:
         return 0
     if "device" in key:
