@@ -150,6 +150,15 @@ def create_app(
             return JSONResponse(status_code=404, content={"detail": "The node does not exist."})
         return node
 
+    @app.post(
+        "/api/validation/run",
+        response_model=GraphResponse,
+        tags=["lineage"],
+        summary="Re-link all imported projects and rerun validation",
+    )
+    async def run_validation() -> dict[str, Any]:
+        return workspace.validate()
+
     @app.get(
         "/api/imports",
         response_model=WorkspaceResponse,

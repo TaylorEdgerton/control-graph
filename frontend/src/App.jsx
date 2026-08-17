@@ -123,9 +123,17 @@ export default function App() {
     URL.revokeObjectURL(url);
   }
 
-  function runValidation() {
-    const issueCount = model.nodes.filter((node) => node.kind === 'MAPPING_ISSUE').length;
-    setNotice(`Validation is complete. ${issueCount} mapping ${issueCount === 1 ? 'issue' : 'issues'} found.`);
+  async function runValidation() {
+    try {
+      const response = await fetch('/api/validation/run', { method: 'POST' });
+      if (!response.ok) throw new Error(`The API returned status ${response.status}.`);
+      const nextModel = await response.json();
+      replaceGraph(nextModel);
+      const issueCount = nextModel.nodes.filter((node) => node.kind === 'MAPPING_ISSUE').length;
+      setNotice(`Validation is complete. ${issueCount} mapping ${issueCount === 1 ? 'issue' : 'issues'} found.`);
+    } catch (error) {
+      setNotice(`Validation failed. ${error.message}`);
+    }
   }
 
   function replaceGraph(nextModel) {

@@ -15,7 +15,7 @@ make run
 
 Open `http://127.0.0.1:8765`. Open `http://127.0.0.1:8765/docs` for the API documentation.
 
-`make run` Use **Import Project** in the application to stage one or more Ignition `.gwbk` backups or control-device `.xml` project exports.
+After `make run`, use **Import Project** in the application to stage one or more Ignition `.gwbk` backups or control-device `.xml` project exports. Confirming or removing a file rebuilds and validates the combined model automatically. **Run Validation** is also available to force a fresh backend relink and validation pass.
 
 ## Use project files
 
@@ -52,7 +52,6 @@ make check
 ## Parser scope
 
 The source parser reads XML elements with common device, point, tag, mapping, POU, variable, and Structured Text fields.
-
 The Ignition parser extracts a `.gwbk` archive and reads the relevant filesystem resources. It resolves UDT parameters and member overrides. The resolver supports DNP3, Modbus, and OPC item identities.
 
 Native Ignition driver devices are modeled as device connections. Third-party OPC UA clients are modeled separately as OPC UA server connections.

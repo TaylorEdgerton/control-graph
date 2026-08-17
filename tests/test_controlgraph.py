@@ -17,7 +17,7 @@ from controlgraph.loader import build_graph
 from controlgraph.model import ControlGraph, ControlNode, stable_id
 from controlgraph.resolver import resolve
 from controlgraph.server import create_app
-from controlgraph.source_parser import parse_source
+from controlgraph.source_parser import link_source_symbols, parse_source
 import httpx
 
 
@@ -509,6 +509,7 @@ class ControlGraphTests(unittest.TestCase):
             self.assertIn("/api/graph", schema["paths"])
             self.assertIn("/api/imports/stage", schema["paths"])
             self.assertIn("/api/imports/confirm", schema["paths"])
+            self.assertIn("/api/validation/run", schema["paths"])
             self.assertEqual(schema["info"]["title"], "ControlGraph API")
             health, response, docs = asyncio.run(
                 get_responses(app, "/api/health", "/api/graph", "/docs")
@@ -517,6 +518,9 @@ class ControlGraphTests(unittest.TestCase):
             self.assertEqual(response.status_code, 200)
             self.assertEqual(response.json()["summary"]["nodeCount"], len(graph.nodes))
             self.assertEqual(docs.status_code, 200)
+            validation = asyncio.run(post_response(app, "/api/validation/run"))
+            self.assertEqual(validation.status_code, 200)
+            self.assertEqual(validation.json()["summary"]["nodeCount"], len(graph.nodes))
         finally:
             app.state.workspace.close()
 
@@ -605,6 +609,182 @@ class ControlGraphTests(unittest.TestCase):
         finally:
             app.state.workspace.close()
 
+    def test_structured_text_interface_variables_resolve_inside_implementation(self) -> None:
+        xml = """<?xml version="1.0" encoding="UTF-8"?>
+<ControlProject name="Scoped_ST_Project">
+  <Tags><Tag name="Published" dataType="BOOL" /></Tags>
+  <POUs>
+    <Program name="PPC_Controls">
+      <Content>
+        <Interface><![CDATA[
+PROGRAM PPC_Controls
+VAR_INPUT
+  Enable : BOOL;
+END_VAR
+VAR
+  RunCommand : BOOL := FALSE;
+END_VAR
+END_PROGRAM
+        ]]></Interface>
+        <Implementation><![CDATA[
+RunCommand := Enable;
+Published := RunCommand;
+Helper(RunCommand);
+        ]]></Implementation>
+      </Content>
+    </Program>
+    <Program name="Other_Program">
+      <Content>
+        <Interface><![CDATA[
+PROGRAM Other_Program
+VAR_INPUT
+  Enable : BOOL;
+END_VAR
+VAR
+  RunCommand : BOOL;
+END_VAR
+END_PROGRAM
+        ]]></Interface>
+        <Implementation><![CDATA[RunCommand := Enable;]]></Implementation>
+      </Content>
+    </Program>
+    <Function name="Helper">
+      <Content>
+        <Interface><![CDATA[
+FUNCTION Helper : BOOL
+VAR_INPUT
+  Value : BOOL;
+END_VAR
+END_FUNCTION
+        ]]></Interface>
+        <Implementation><![CDATA[Helper := Value;]]></Implementation>
+      </Content>
+    </Function>
+  </POUs>
+</ControlProject>
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            project = Path(temp) / "scoped-st.xml"
+            project.write_text(xml, encoding="utf-8")
+            graph = parse_source(project)
+
+        by_name = {node.name: node for node in graph.nodes.values()}
+        ppc = by_name["PPC_Controls"]
+        other = by_name["Other_Program"]
+        helper = by_name["Helper"]
+        ppc_enable = by_name["PPC_Controls.Enable"]
+        ppc_run = by_name["PPC_Controls.RunCommand"]
+        other_enable = by_name["Other_Program.Enable"]
+        helper_result = by_name["Helper.Result"]
+        published = by_name["Published"]
+
+        self.assertEqual(ppc_enable.kind, "IEC_VARIABLE")
+        self.assertEqual(ppc_enable.attributes["dataType"], "BOOL")
+        self.assertEqual(ppc_enable.attributes["direction"], "input")
+        self.assertEqual(ppc_run.attributes["initialValue"], "FALSE")
+        self.assertTrue(has_edge(graph, ppc.id, ppc_enable.id, "declares"))
+        self.assertTrue(has_edge(graph, ppc_enable.id, ppc.id, "reads"))
+        self.assertTrue(has_edge(graph, ppc.id, ppc_run.id, "writes"))
+        self.assertTrue(has_edge(graph, ppc.id, published.id, "writes"))
+        self.assertTrue(has_edge(graph, ppc.id, helper.id, "calls"))
+        self.assertEqual(helper_result.attributes["dataType"], "BOOL")
+        self.assertTrue(has_edge(graph, helper.id, helper_result.id, "writes"))
+        self.assertFalse(has_edge(graph, other_enable.id, ppc.id, "reads"))
+        self.assertTrue(has_edge(graph, other_enable.id, other.id, "reads"))
+
+    def test_separate_rtac_modules_link_by_exact_tag_name_after_merge(self) -> None:
+        pou_xml = """<?xml version="1.0" encoding="utf-8"?>
+<RTACModule>
+  <POU>
+    <Name>PPC_Controls</Name>
+    <POUKind>Program</POUKind>
+    <Content>
+      <Interface><![CDATA[
+PROGRAM PPC_Controls
+VAR
+  operating : BOOL;
+END_VAR
+END_PROGRAM
+      ]]></Interface>
+      <Implementation><![CDATA[
+operating := PPC_1_MODBUS.Control_and_Status_Word_for_Inverter_64.oper;
+      ]]></Implementation>
+    </Content>
+  </POU>
+</RTACModule>
+"""
+        device_xml = """<?xml version="1.0" encoding="utf-8"?>
+<RTACModule>
+  <Device>
+    <Name>PPC_1</Name>
+    <Manufacturer>Any</Manufacturer>
+    <Model>Other</Model>
+    <Connection>
+      <Protocol>ModbusClient</Protocol>
+      <ConnectionType>Ethernet</ConnectionType>
+      <SettingPages>
+        <SettingPage>
+          <Name>Mappings</Name>
+          <Row>
+            <Setting enabled="false">
+              <Column>Tag Name</Column>
+              <Value>PPC_1_MODBUS.Control_and_Status_Word_for_Inverter_64.oper</Value>
+            </Setting>
+          </Row>
+        </SettingPage>
+      </SettingPages>
+    </Connection>
+  </Device>
+</RTACModule>
+"""
+        with tempfile.TemporaryDirectory() as temp:
+            root = Path(temp)
+            pou_path = root / "program.xml"
+            device_path = root / "modbus.xml"
+            pou_path.write_text(pou_xml, encoding="utf-8")
+            device_path.write_text(device_xml, encoding="utf-8")
+            pou_graph = parse_source(pou_path)
+            device_graph = parse_source(device_path)
+
+            graph = ControlGraph()
+            graph.merge(pou_graph)
+            graph.merge(device_graph)
+            link_source_symbols(graph)
+            by_name = {node.name: node for node in graph.nodes.values()}
+            logic = by_name["PPC_Controls"]
+            device = by_name["PPC_1"]
+            tag = by_name["PPC_1_MODBUS.Control_and_Status_Word_for_Inverter_64.oper"]
+            self.assertEqual(tag.kind, "SOURCE_TAG")
+            self.assertEqual(tag.attributes["enabled"], "false")
+            self.assertEqual(
+                logic.attributes["readReferences"],
+                ["PPC_1_MODBUS.Control_and_Status_Word_for_Inverter_64.oper"],
+            )
+            self.assertTrue(has_edge(graph, device.id, tag.id, "maps_to_internal_tag"))
+            self.assertTrue(has_edge(graph, tag.id, logic.id, "reads"))
+
+            empty = ControlGraph()
+            app = create_app(
+                resolve(empty, empty),
+                serve_static=False,
+                source_graph=empty,
+                ignition_graph=empty,
+            )
+            try:
+                first_import = asyncio.run(import_without_removal(app, pou_path))
+                first_names = {node["name"] for node in first_import.json()["graph"]["nodes"]}
+                self.assertIn("PPC_Controls", first_names)
+                self.assertNotIn(tag.name, first_names)
+
+                second_import = asyncio.run(import_without_removal(app, device_path))
+                self.assertTrue(payload_has_edge(
+                    second_import.json()["graph"], tag.name, logic.name, "reads"
+                ))
+                validation = asyncio.run(post_response(app, "/api/validation/run"))
+                self.assertTrue(payload_has_edge(validation.json(), tag.name, logic.name, "reads"))
+            finally:
+                app.state.workspace.close()
+
     def test_built_mui_frontend_is_served_when_available(self) -> None:
         if not (ROOT / "frontend" / "dist" / "index.html").exists():
             self.skipTest("Run 'make build' to create the frontend")
@@ -643,10 +823,52 @@ def directed_path(
     return None
 
 
+def has_edge(graph, source: str, target: str, kind: str) -> bool:
+    return any(
+        edge.source == source and edge.target == target and edge.kind == kind
+        for edge in graph.edges.values()
+    )
+
+
 async def get_responses(app, *paths: str) -> tuple[httpx.Response, ...]:
     transport = httpx.ASGITransport(app=app)
     async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
         return tuple([await client.get(path) for path in paths])
+
+
+async def post_response(app, path: str) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
+        return await client.post(path)
+
+
+async def import_without_removal(app, path: Path) -> httpx.Response:
+    transport = httpx.ASGITransport(app=app)
+    async with httpx.AsyncClient(transport=transport, base_url="http://controlgraph.test") as client:
+        with path.open("rb") as upload:
+            staged = await client.post(
+                "/api/imports/stage",
+                content=upload.read(),
+                headers={
+                    "Content-Type": "application/octet-stream",
+                    "X-ControlGraph-Filename": path.name,
+                },
+            )
+        record_id = staged.json()["staged"][0]["id"]
+        return await client.post(
+            "/api/imports/confirm",
+            json={"selections": [{"stagedId": record_id, "tagProviders": []}]},
+        )
+
+
+def payload_has_edge(payload: dict, source_name: str, target_name: str, kind: str) -> bool:
+    node_ids = {node["name"]: node["id"] for node in payload["nodes"]}
+    return any(
+        edge["source"] == node_ids.get(source_name)
+        and edge["target"] == node_ids.get(target_name)
+        and edge["kind"] == kind
+        for edge in payload["edges"]
+    )
 
 
 async def import_workflow(

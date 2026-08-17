@@ -12,7 +12,7 @@ import zipfile
 from .ignition_parser import GatewayBackupInfo, inspect_ignition_backup, parse_ignition
 from .model import ControlGraph
 from .resolver import resolve
-from .source_parser import SourceProjectInfo, inspect_source_project, parse_source
+from .source_parser import SourceProjectInfo, inspect_source_project, link_source_symbols, parse_source
 
 
 @dataclass
@@ -174,6 +174,11 @@ class AnalysisWorkspace:
         with self._lock:
             return self._current_graph.to_dict()
 
+    def validate(self) -> dict[str, Any]:
+        with self._lock:
+            self._rebuild()
+            return self._current_graph.to_dict()
+
     def close(self) -> None:
         self._temporary_directory.cleanup()
 
@@ -185,6 +190,7 @@ class AnalysisWorkspace:
                 continue
             target = source if record.import_kind == "source" else ignition
             target.merge(copy.deepcopy(record.graph))
+        link_source_symbols(source)
         self._current_graph = resolve(source, ignition)
 
 
