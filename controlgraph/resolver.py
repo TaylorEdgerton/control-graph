@@ -4,7 +4,7 @@ from collections import defaultdict
 import ipaddress
 from typing import Any
 
-from .identity import canonical
+from .identity import canonical, opc_node_display_name
 from .model import ControlGraph, ControlNode, Evidence, stable_id
 
 
@@ -18,14 +18,22 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
     graph.merge(ignition)
     connection_matches = _resolve_opc_connections(graph)
 
+    connections = _connections_by_source(graph)
     ignition_sources: dict[str, list[str]] = defaultdict(list)
+    scoped_sources: dict[tuple[str, str], list[str]] = defaultdict(list)
     for node in graph.nodes.values():
         if node.kind not in IGNITION_PROTOCOL_KINDS:
             continue
         for key in _identity_keys(_identity(node)):
             if node.id not in ignition_sources[key]:
                 ignition_sources[key].append(node.id)
+        connection_id = connections.get(node.id)
+        if connection_id:
+            for key in _symbol_keys(_identity(node), node.name):
+                if node.id not in scoped_sources[(connection_id, key)]:
+                    scoped_sources[(connection_id, key)].append(node.id)
 
+    devices = _devices_by_point(graph)
     matched_sources: set[str] = set()
     for point in list(graph.nodes.values()):
         if point.kind != "PROTOCOL_POINT":
@@ -34,41 +42,62 @@ def resolve(source: ControlGraph, ignition: ControlGraph) -> ControlGraph:
             continue
         identity = _identity(point)
         keys = _identity_keys(identity)
-        if not keys:
-            _add_issue(graph, point, "The protocol point has no complete communication identity", "unresolved")
-            continue
-        key = keys[0]
-        source_device_id = _point_device(graph, point.id)
+        key = keys[0] if keys else ""
+        source_device_id = devices.get(point.id)
         scoped_connection_id = connection_matches.get(source_device_id or "")
         candidates: list[str] = []
+        mapping_source = "POINT_IDENTITY"
         for candidate_key in keys:
             candidate_ids = ignition_sources.get(candidate_key, [])
             if scoped_connection_id:
                 candidate_ids = [
                     candidate
                     for candidate in candidate_ids
-                    if _ignition_connection(graph, candidate) == scoped_connection_id
+                    if connections.get(candidate) == scoped_connection_id
                 ]
             if candidate_ids:
                 key = candidate_key
                 candidates = candidate_ids
                 break
+        if not candidates and scoped_connection_id:
+            # The endpoint already paired the two connections, so the host is scope, not identity:
+            # inside that pair a symbol path is enough (an RTAC export has no OPC UA node id).
+            for candidate_key in _symbol_keys(identity, point.name):
+                candidate_ids = scoped_sources.get((scoped_connection_id, candidate_key), [])
+                if candidate_ids:
+                    key = candidate_key
+                    candidates = candidate_ids
+                    mapping_source = "SYMBOL_PATH"
+                    break
+        if not candidates and not keys:
+            _add_issue(graph, point, "The protocol point has no complete communication identity", "unresolved")
+            continue
         if len(candidates) == 1:
             source_id = candidates[0]
             matched_sources.add(source_id)
-            connection_id = _ignition_connection(graph, source_id)
+            connection_id = connections.get(source_id)
             target = connection_id or source_id
             evidence = [
                 *point.evidence,
                 *graph.nodes[source_id].evidence,
-                Evidence("resolver", key, "The normalized communication identities are equal"),
+                Evidence(
+                    "resolver",
+                    key,
+                    "The symbol paths are equal inside the connection matched by endpoint"
+                    if mapping_source == "SYMBOL_PATH"
+                    else "The normalized communication identities are equal",
+                ),
             ]
             graph.add_edge(
                 point.id,
                 target,
                 "communication_identity_match",
                 status="resolved",
-                attributes={"identityKey": key, "matchedSource": source_id},
+                attributes={
+                    "identityKey": key,
+                    "matchedSource": source_id,
+                    "mappingSource": mapping_source,
+                },
                 evidence=evidence,
             )
             if source_device_id and connection_id:
@@ -246,26 +275,41 @@ def _identity_keys(identity: dict[str, Any]) -> list[str]:
     return keys
 
 
-def _ignition_connection(graph: ControlGraph, source_id: str) -> str | None:
-    for edge in graph.edges.values():
-        if (
-            edge.target == source_id
-            and edge.kind == "provides"
-            and graph.nodes[edge.source].kind in IGNITION_CONNECTION_KINDS
-        ):
-            return edge.source
-    return None
+def _symbol_keys(identity: dict[str, Any], name: str) -> list[str]:
+    """Connection-scoped fallback keys: the IEC symbol path, however each side spells it."""
+    if str(identity.get("kind", "")).casefold() not in {"opc", "opcua", ""}:
+        return []
+    keys: list[str] = []
+    for value in (
+        identity.get("displayName", ""),
+        identity.get("iecPath", ""),
+        identity.get("identifier", ""),
+        identity.get("nodeid", ""),
+        name,
+    ):
+        text = str(value).strip()
+        if not text:
+            continue
+        key = opc_node_display_name(text.rsplit(";", 1)[-1].split("=", 1)[-1]).casefold()
+        if key and key not in keys:
+            keys.append(key)
+    return keys
 
 
-def _point_device(graph: ControlGraph, point_id: str) -> str | None:
-    for edge in graph.edges.values():
-        if (
-            edge.target == point_id
-            and edge.kind == "contains"
-            and graph.nodes[edge.source].kind == "SOURCE_DEVICE"
-        ):
-            return edge.source
-    return None
+def _connections_by_source(graph: ControlGraph) -> dict[str, str]:
+    return {
+        edge.target: edge.source
+        for edge in graph.edges.values()
+        if edge.kind == "provides" and graph.nodes[edge.source].kind in IGNITION_CONNECTION_KINDS
+    }
+
+
+def _devices_by_point(graph: ControlGraph) -> dict[str, str]:
+    return {
+        edge.target: edge.source
+        for edge in graph.edges.values()
+        if edge.kind == "contains" and graph.nodes[edge.source].kind == "SOURCE_DEVICE"
+    }
 
 
 def _add_device_connection_match(
