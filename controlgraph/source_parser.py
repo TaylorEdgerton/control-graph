@@ -479,6 +479,8 @@ def _classify(local: str, props: dict[str, str]) -> str | None:
         return "SOURCE_TAG"
     if any(term in key for term in MAP_TERMS) and any(clean_key(k) in prop_keys for k in REFERENCE_KEYS):
         return "MAPPING"
+    if key in {"points", "protocolpoints", "pointlist", "datasetmembers"}:
+        return None
     if any(term in key for term in POINT_TERMS) or (
         any(item in prop_keys for item in ("index", "pointindex", "register", "nodeid"))
         and not any(term in key for term in DEVICE_TERMS)
@@ -502,7 +504,25 @@ def _properties(element: ET.Element) -> dict[str, str]:
     for child in element:
         if len(child) == 0 and child.text and child.text.strip() and len(child.text.strip()) < 500:
             result.setdefault(clean_key(_local(child.tag)), child.text.strip())
+        elif clean_key(_local(child.tag)) == "setting":
+            column, value = _column_value(child)
+            if column:
+                result.setdefault(clean_key(column), value)
+        elif clean_key(_local(child.tag)) == "row":
+            # A "Setting"/"Value" row is one named property of this element, not a record of its own.
+            row = _properties(child)
+            if row.get("setting"):
+                result.setdefault(clean_key(row["setting"]), row.get("value", ""))
     return result
+
+
+def _column_value(setting: ET.Element) -> tuple[str, str]:
+    values = {
+        clean_key(_local(child.tag)): (child.text or "").strip()
+        for child in setting
+        if len(child) == 0
+    }
+    return values.get("column", ""), values.get("value", "")
 
 
 def _name(props: dict[str, str], fallback: str) -> str:

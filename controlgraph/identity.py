@@ -7,7 +7,7 @@ from urllib.parse import urlsplit
 
 ALIASES = {
     "host": (
-        "host", "hostname", "ip", "ipaddress", "endpoint", "endpointurl",
+        "host", "hostname", "ip", "ipaddress", "serveripaddress", "endpoint", "endpointurl",
         "discoveryurl", "serverurl",
     ),
     "device": ("device", "devicename", "connection", "channel"),
@@ -190,7 +190,7 @@ def opc_endpoint_identity(
         return {}
 
     aliases: list[str] = []
-    for key in ("host", "hostname", "ip", "ipAddress", "hostOverride", "bindAddress"):
+    for key in ("host", "hostname", "ip", "ipAddress", "serverIpAddress", "hostOverride", "bindAddress"):
         value = flat.get(clean_key(key), "").strip().casefold()
         if value and value not in aliases:
             aliases.append(value)
@@ -212,7 +212,7 @@ def opc_endpoint_identity(
     explicit_port = next(
         (
             flat.get(clean_key(key), "")
-            for key in ("port", "opcPort", "serverPort", "endpointPort")
+            for key in ("port", "portNumber", "opcPort", "serverPort", "endpointPort")
             if flat.get(clean_key(key), "")
         ),
         "",
